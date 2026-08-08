@@ -84,6 +84,8 @@ would only add ceremony. It arrives before the first release.
 | Delete to a Trash | Recoverable; nothing is destroyed silently |
 | Right-click a cell → set its sort value | For dates and text the app could not read |
 | Search, including CJK | `通寶` matches inside `乾隆通寶` |
+| Edit the ID, Name and Subcollection columns | Typing another subcollection's name moves the coin |
+| Move several coins at once | **Move to…** on the toolbar, or the cell context menu |
 
 Rejected edits explain themselves in the status bar and never enter the undo history: entering
 `5 stone` in a weight column reports *unknown mass unit 'stone'* and leaves the cell alone.
@@ -102,6 +104,8 @@ Rejected edits explain themselves in the status bar and never enter the undo his
   beside its base grade and stickers nudging within it
 - Multiple concurrent certifications and a crack-out/regrade history
 - An append-only purchase ledger, with cost, proceeds and profit derived rather than typed
+- Every coin gets an identifier automatically, editable, unique, and never reused
+- A coin's subcollection can be changed at any time, keeping all of its values
 - Bulk add and bulk edit
 - Full-text search that works for two-character CJK terms and folds diacritics
 

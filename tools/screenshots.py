@@ -110,6 +110,19 @@ def build(path: Path) -> MainWindow:
     return window
 
 
+def column_index(model: object, label: str) -> int:
+    """Find a column by its heading.
+
+    Resolved by name rather than position on purpose: positions shift whenever the identity
+    columns or a subcollection's fields change, and hardcoding them is exactly the bug that
+    broke the grid when switching subcollections.
+    """
+    for section in range(model.columnCount()):
+        if model.headerData(section, Qt.Orientation.Horizontal) == label:
+            return section
+    raise LookupError(f"no column headed {label!r}")
+
+
 def shot(app: QApplication, widget: object, path: Path, width: int, height: int) -> None:
     widget.resize(width, height)
     widget.show()
@@ -137,7 +150,8 @@ def main(argv: list[str]) -> int:
 
     window.subcollection_combo.setCurrentText("Chinese Cash")
     app.processEvents()
-    model.sort(3, Qt.SortOrder.AscendingOrder)
+    date_column = column_index(model, "Date")
+    model.sort(date_column, Qt.SortOrder.AscendingOrder)
     shot(app, window, target / "02-chinese-cash.png", 1080, 300)
 
     window.search_box.setText("通寶")
@@ -147,14 +161,19 @@ def main(argv: list[str]) -> int:
     window._search()
 
     # Confirm one guessed sort position, so the queue visibly shrinks.
+    date_column = column_index(model, "Date")
     row = next(
-        r for r in range(model.rowCount()) if model.data(model.index(r, 3)) == "Guangxu year 30"
+        r
+        for r in range(model.rowCount())
+        if model.data(model.index(r, date_column)) == "Guangxu year 30"
     )
     window.undo.push(
-        SetSortValue(window.service, model.specimen_at(row).id, model.field_at(3).id, 1904)
+        SetSortValue(
+            window.service, model.specimen_at(row).id, model.field_at(date_column).id, 1904
+        )
     )
     model.refresh()
-    model.sort(3, Qt.SortOrder.AscendingOrder)
+    model.sort(column_index(model, "Date"), Qt.SortOrder.AscendingOrder)
     shot(app, window, target / "04-sort-values.png", 1080, 300)
 
     window.subcollection_combo.setCurrentText("Ancients")

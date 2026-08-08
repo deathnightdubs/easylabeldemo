@@ -13,6 +13,9 @@ from numis.db import create_library
 from numis.services import CollectionService
 from numis.ui.main_window import MASTER_VIEW, MainWindow
 
+#: The fixture shows two fields after the three identity columns (ID, Name, Subcollection).
+HEAD_COLUMN, DATE_COLUMN = 3, 4
+
 
 @pytest.fixture
 def window(qapp, tmp_path):
@@ -108,12 +111,12 @@ def test_the_review_counter_appears_and_clears(window):
     window.subcollection_combo.setCurrentText("Modern")
     window._add_rows(1)
     window.model.setData(
-        window.model.index(0, 2), "1736-1795", Qt.ItemDataRole.EditRole
+        window.model.index(0, DATE_COLUMN), "1736-1795", Qt.ItemDataRole.EditRole
     )
     window._update_status()
     assert "confirm" in window.review_label.text()
 
-    field = window.model.field_at(2)
+    field = window.model.field_at(DATE_COLUMN)
     specimen = window.model.specimen_at(0)
     window.service.set_sort_value(specimen, field, 1765)
     window.session.commit()
@@ -124,7 +127,7 @@ def test_the_review_counter_appears_and_clears(window):
 def test_go_to_next_unconfirmed_selects_the_cell(window):
     window.subcollection_combo.setCurrentText("Modern")
     window._add_rows(2)
-    window.model.setData(window.model.index(1, 2), "1736-1795", Qt.ItemDataRole.EditRole)
+    window.model.setData(window.model.index(1, DATE_COLUMN), "1736-1795", Qt.ItemDataRole.EditRole)
     window._go_to_review()
     assert window.view.currentIndex().row() == 1
     assert window.model.is_flagged(window.view.currentIndex())

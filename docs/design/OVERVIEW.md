@@ -22,9 +22,17 @@ separate front and back offsets for badly punched 2×2 holders.
 
 ## How your collection is organised
 
+**Every coin has an ID.** A plain number, assigned automatically, which you can change to anything
+you like as long as no other coin uses it. Numbers of coins you have deleted stay reserved, so an ID
+in an old note or on a printed label never comes to mean a different coin.
+
 **One row is one coin.** That is the whole model. There is no hidden "coin type" concept behind the
 scenes, no catalogue of things-that-exist that your coins have to be attached to. If you own three of
 the same coin, that is three rows, each with its own grade, price, photo and notes.
+
+**Coins can be moved between subcollections** at any time, one at a time by typing in the
+Subcollection column or several at once with *Move to…*. Nothing is lost in the move: values the
+destination does not display are kept, and moving the coin back brings them into view again.
 
 **Subcollections are like separate spreadsheet tabs.** You might have *Modern*, *Ancients* and
 *Chinese Cash*. Each one can have completely different columns. You can look at one at a time, or look
@@ -214,6 +222,7 @@ What "spreadsheet-easy" means concretely:
 | Sort by clicking a column header | Using the sort numbers described above |
 | Freeze and reorder columns, hide columns | Per view, saved |
 | Bulk add | Create many coins at once from one filled-in form |
+| Editable ID, Name and Subcollection | Every coin is numbered automatically; type another subcollection's name to move it |
 
 Two practical notes carried over from what is known about this toolkit: automatic column resizing is
 the usual cause of sluggish large tables and will be avoided in favour of fixed or user-set widths;

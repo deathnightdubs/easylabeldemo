@@ -23,7 +23,7 @@ from sqlalchemy import select
 from ..db import Library, create_library, open_library
 from ..models import Subcollection
 from ..services import CollectionService
-from .commands import AddSpecimens, DeleteSpecimens, SetSortValue
+from .commands import AddSpecimens, DeleteSpecimens, MoveSpecimens, SetSortValue
 from .fields_dialog import ManageFieldsDialog, NewFieldDialog
 from .sheet_view import SheetView
 from .table_model import SpecimenTableModel
@@ -64,8 +64,13 @@ class MainWindow(QMainWindow):
         self.model.error.connect(self._show_error)
         self.model.contents_changed.connect(self._update_status)
 
+        # Any undo or redo changes the database behind the model's back, so the grid has to
+        # be told. Without this, an undo appeared to do nothing until the view was switched.
+        self.undo.indexChanged.connect(self._after_undo)
+
         self.view = SheetView(self)
         self.view.setModel(self.model)
+        self.model.sort_cleared.connect(self.view.clear_sort_indicator)
         self.view.sort_value_requested.connect(self._edit_sort_value)
         self.view.status.connect(lambda text: self.statusBar().showMessage(text, 4000))
         self.setCentralWidget(self.view)
@@ -96,6 +101,12 @@ class MainWindow(QMainWindow):
         self.add_many_action = QAction("Add many…", self)
         self.add_many_action.triggered.connect(self._add_many)
         bar.addAction(self.add_many_action)
+
+        self.move_action = QAction("Move to…", self)
+        self.move_action.setToolTip("Move the selected coins to another subcollection")
+        self.move_action.triggered.connect(self._ask_and_move)
+        bar.addAction(self.move_action)
+        self.view.move_requested_action = self.move_action
 
         self.delete_action = QAction("Delete rows", self)
         self.delete_action.triggered.connect(self._delete_rows)
@@ -169,6 +180,8 @@ class MainWindow(QMainWindow):
         view_menu.addAction(review_action)
 
         collection_menu = self.menuBar().addMenu("&Collection")
+        collection_menu.addAction(self.move_action)
+        collection_menu.addSeparator()
         new_sub = QAction("New subcollection…", self)
         new_sub.triggered.connect(self._new_subcollection)
         new_field = QAction("New column…", self)
@@ -193,15 +206,27 @@ class MainWindow(QMainWindow):
         self._subcollection_changed()
 
     def _subcollection_changed(self) -> None:
-        self.model.set_subcollection(self.current_subcollection())
-        enabled = self.current_subcollection() is not None
+        subcollection = self.current_subcollection()
+
+        # Enable the actions first. These used to come after the refresh, so any failure while
+        # loading left the toolbar greyed out on a perfectly good subcollection.
+        enabled = subcollection is not None
         for action in (self.add_row_action, self.add_many_action, self.columns_action):
             action.setEnabled(enabled)
-        if not enabled:
+
+        self.model.set_subcollection(subcollection)
+
+        if enabled:
+            # Clear the master-view hint, so it cannot linger over a real subcollection.
+            self.statusBar().clearMessage()
+        else:
             self.statusBar().showMessage(
                 "The master view merges every subcollection. Choose one to add rows or columns.",
                 6000,
             )
+
+    def _after_undo(self, _index: int) -> None:
+        self.model.refresh()
 
     def current_subcollection(self) -> Subcollection | None:
         identifier = self.subcollection_combo.currentData()
@@ -255,6 +280,38 @@ class MainWindow(QMainWindow):
             f"Moved {len(specimen_ids)} row(s) to the Trash — nothing is deleted permanently",
             6000,
         )
+
+    def move_to_subcollection(self, subcollection: Subcollection) -> None:
+        """Move the selected coins. Their values are kept, whether shown there or not."""
+        rows = sorted({index.row() for index in self.view.selectedIndexes()})
+        if not rows:
+            return
+        specimen_ids = [self.model.specimen_at(row).id for row in rows]
+        self.undo.push(MoveSpecimens(self.service, specimen_ids, subcollection.id))
+        self.model.refresh()
+        self.statusBar().showMessage(
+            f"Moved {len(specimen_ids)} coin(s) to {subcollection.name}", 6000
+        )
+
+    def _ask_and_move(self) -> None:
+        rows = sorted({index.row() for index in self.view.selectedIndexes()})
+        if not rows:
+            self.statusBar().showMessage("Select the coins to move first", 4000)
+            return
+        others = [
+            subcollection
+            for subcollection in self.session.scalars(
+                select(Subcollection).order_by(Subcollection.sort_order, Subcollection.name)
+            )
+        ]
+        if not others:
+            return
+        names = [subcollection.name for subcollection in others]
+        name, accepted = QInputDialog.getItem(
+            self, "Move coins", f"Move {len(rows)} coin(s) to:", names, 0, False
+        )
+        if accepted and name:
+            self.move_to_subcollection(others[names.index(name)])
 
     # -- columns ----------------------------------------------------------
 
