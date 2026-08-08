@@ -26,6 +26,9 @@ Recorded so the revisions are easy to absorb.
 | **Grading is fully user-defined data** | Scales, levels and modifiers are rows, not code. The app ships with none. |
 | **Soft deletion retained indefinitely** | No automatic purge until you ask for one. |
 | **`net_minor` replaces `total_minor`** | A bug found in testing: the original summed fees in both directions, overstating every profit figure. |
+| **`quantity` removed from `specimen`** | One row is one coin. Bulk add creates 47 rows; totals stay a plain row count. |
+| **The `lookup` field type removed** | Remembered-entry vocabularies are dropped for now. Plain text fields, filtered as text. |
+| **Registries ship completely empty** | No seed catalogues, grading companies, scales or modifiers in test builds. |
 
 ---
 
@@ -176,7 +179,7 @@ Consequences worth stating plainly:
 
 One row per specimen. There is no coin-type entity, no variety entity, and no inheritance. What the
 software knows about a coin is: which subcollection it is in, a display name, an optional inventory
-code, a status, a quantity, and whatever field values, catalogue references, grades, certifications,
+code, a status, and whatever field values, catalogue references, grades, certifications,
 links and events are attached to it.
 
 This is a real simplification with real consequences, stated honestly:
@@ -190,23 +193,20 @@ This is a real simplification with real consequences, stated honestly:
   numbers all satisfy this slot" is expressed there. That is the only place a type-like concept was
   ever needed, and it is cheaper to express as criteria than as a table.
 
-### Quantity and bulk lots
+### Bulk add and bulk edit
 
-`specimen.quantity` defaults to 1. A bag of 47 wheat cents can be one row with `quantity = 47`
-rather than 47 rows.
+**One row is exactly one coin.** There is no `quantity` column. A lot of 47 identical coins is 47
+rows, and collection totals are therefore always a plain row count with no special cases anywhere in
+reporting. Per-row lots may be revisited later; nothing in the schema prevents adding a nullable
+`quantity` column when they are.
 
-**Bulk add** creates *n* separate rows from one filled-in form, for genuinely distinct coins that
-share most of their data — the common case of buying a run of dates, or twelve of the same issue that
-will each get their own grade and photograph later.
-
-These are two different needs and both are supported: `quantity` for an undifferentiated lot, bulk
-add for *n* individual specimens.
+**Bulk add** creates *n* separate rows from one filled-in form. This is the primary way shared data
+gets entered, since there is no type layer to inherit from.
 
 **Bulk edit** applies a change to every selected row — set a field, add a tag, move subcollection,
-add a catalogue reference — as a single undoable operation.
+add a catalogue reference — as one undoable operation.
 
-> Decision needed: should lots with `quantity > 1` be excluded by default from statistics such as
-> average grade, and counted as *n* items or 1 item in collection totals?
+Both are first-build features, not later conveniences.
 
 ### Status
 
@@ -365,15 +365,23 @@ already exists. That is the test I applied when deciding what could safely wait.
 
 ---
 
-## Part 8 — Decisions needed
+## Part 8 — Decisions
 
-1. **Bulk lots in statistics.** Does `quantity = 47` count as 47 items or 1 in totals, and should
-   lots be excluded from average-grade style statistics by default?
-2. **Inventory codes.** Currently unique across the library and optional. Should they auto-generate
-   on creation, and should numbering be per subcollection?
-3. **Status vocabulary.** The enumeration is fixed in the schema. Is the current list right, or
-   should users be able to add their own statuses?
-4. **Master view scope.** Does the master view show every subcollection by default, or is it a view
-   the user assembles by picking which subcollections to combine?
-5. **Naming template.** Is an automatically generated display name wanted at all, or would you
-   rather the first column simply be whichever field the user chooses?
+### Resolved
+
+| Question | Answer |
+|---|---|
+| Bulk lots in one row | Not for now. One row is one coin; `quantity` removed. Bulk add and bulk edit cover the need |
+| Seed data | Test builds ship a completely blank slate |
+| Soft delete retention | Indefinite; no automatic purge |
+
+### Still open
+
+1. **Inventory codes.** Currently optional and unique across the library. Should they auto-generate
+   on creation, and should numbering restart per subcollection?
+2. **Status vocabulary.** Fixed in the schema. Is the current list right, or should users add their
+   own statuses?
+3. **Master view scope.** Does it show every subcollection by default, or is it assembled by picking
+   which subcollections to combine?
+4. **Naming template.** Is a generated display name wanted at all, or should the first column simply
+   be whichever field the user chooses?

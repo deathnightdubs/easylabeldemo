@@ -41,7 +41,6 @@ registry entry plus one editor.
 |---|---|---|---|---|
 | `text` | text | — | `max_length`, `pattern`, `transform` | is, is not, contains, starts, ends, empty |
 | `long_text` | text | — | `rows`, `markdown` | contains, empty (full-text indexed) |
-| `lookup` | text | — | `vocabulary`, `allow_new` | is, is not, contains, in list, empty |
 | `number` | number | plain | `decimals`, `min`, `max`, `step`, `unit_label` | =, ≠, <, ≤, >, ≥, between, empty |
 | `weight` | number | gram | `display_unit` (g, mg, gr, ozt, dwt), `decimals` | numeric set, between |
 | `dimension` | number | millimetre | `display_unit` (mm, in), `decimals` | numeric set, between |
@@ -57,16 +56,18 @@ registry entry plus one editor.
 
 Notes on the ones that matter:
 
-**`lookup`** is free text with a remembered vocabulary. Typing *Kremnica* offers previous entries and
-adds new ones automatically. It is the right default for mints, rulers and dealers: `category` would
-force the user to pre-declare every possible value before recording a coin, while plain `text` yields
-*Kremnica*, *kremnica* and *Kremnitz* as three unrelated values.
+**There is no `lookup` type.** An earlier draft proposed free text with a remembered vocabulary for
+mints, rulers and dealers. It is dropped: identity fields are plain `text`, and filtering text is
+perfectly good for finding things. Remembered entries can return later as a *convenience on top of
+`text`* — an autocomplete that suggests previous values — without being a distinct field type, which
+means adding it later changes no stored data.
 
 **`purity`** stores per mille, so `0.900`, `900`, `90%` and `22K` are one value entered four ways.
 `entered_as` on the value row preserves the original expression.
 
-**`category`** options carry both `sort_order` and `sort_value`, so a fixed denomination list can be
-ordered once and reused.
+**`category`** is retained for genuinely fixed lists, where a controlled set is the point rather than
+an obstacle — metal, shape, edge. Its options carry both `sort_order` and `sort_value`. It is never
+the default for anything a user might invent mid-entry; those are `text`.
 
 There is deliberately **no `grade` field type**. Grading is a special system (Part 4.2), because a
 coin can carry several grades from several standards with modifiers and history.
@@ -170,13 +171,13 @@ They are still positioned like fields in the interface: `subcollection_block` ro
 `block_kind` of `catalogues`, `grades`, `certifications` or `links` place each block in the form
 layout, in any order, under any label, and removing a block hides it without deleting any data.
 
-**All four registries ship empty.** No catalogues, no grading companies, no grade scales, no
-modifiers. The user creates what they use.
+**All four registries ship empty**, and for test builds that is deliberate and absolute: no
+catalogues, no grading companies, no grade scales, no modifiers, no example fields. Every test
+constructs exactly the registry rows it needs, which keeps tests honest about what the code actually
+requires and means no fixture data can be mistaken for a product decision.
 
-> Decision needed: shipping completely empty makes a fresh library unusable until the user builds a
-> scale from scratch. I suggest optional **starter packs** offered as presets on first run — one
-> click to import a Sheldon scale or a KM catalogue entry, entirely skippable and fully editable
-> afterwards. That satisfies "no defaults" while not punishing a new user. Confirm which you want.
+Starter packs remain available as a later idea for real users, shipped as ordinary presets rather
+than built-in rows.
 
 ### 4.1 Catalogue references
 
@@ -335,12 +336,11 @@ would-fail and would-change-meaning counts, and takes a backup before proceeding
 
 | From → To | Behaviour |
 |---|---|
-| `text` → `lookup` | always; distinct values become the vocabulary |
 | `text` → `category` | distinct values become options |
 | `text` → `number`/`weight`/`dimension`/`purity` | parsed; failures listed in the dry run |
 | `text` → `date` | parsed by the fuzzy-date parser |
 | `number` ↔ `weight`/`dimension`/`purity` | numerically preserved, unit reinterpreted, with a warning naming the assumed unit |
-| `category` → `text`/`lookup` | option labels become text |
+| `category` → `text` | option labels become text |
 | `date` → `text` | uses `display`, so the user's own expression survives |
 | anything → `long_text` / `json` | always |
 | any other pair | offered only via `long_text` as an intermediate, with a warning |
@@ -349,8 +349,8 @@ would-fail and would-change-meaning counts, and takes a backup before proceeding
 
 ## Part 6 — Presets
 
-A preset is a JSON file bundling field groups, field definitions, category options, lookup
-vocabularies, and optionally catalogues, grade scales, levels and modifiers. Applying one is
+A preset is a JSON file bundling field groups, field definitions, category options, and optionally
+catalogues, grade scales, levels and modifiers. Applying one is
 **additive and merges by key**: an existing key is left alone and reported as skipped, nothing is
 ever deleted, and the user previews exactly what will be added before confirming.
 `field_definition.origin_preset` records provenance so "remove what this preset added" stays
@@ -364,18 +364,23 @@ evaluated by the whitelisted parser of 1.3.
 
 ---
 
-## Part 7 — Decisions needed
+## Part 7 — Decisions
 
-1. **Starter packs.** Registries ship empty. Do you want optional one-click starter presets for
-   common grade scales and catalogues, or a genuinely blank slate?
-2. **Grade axis.** Is a 1–70 style axis the right shared scale, or would you rather it were 0–100
-   abstract with no resemblance to Sheldon, so no standard appears privileged?
-3. **Modifier deltas.** Should `Details` sit just *below* its base grade (current: −0.4) or just
-   above the next lower grade? They differ when several problem coins of adjacent grades are sorted
-   together.
-4. **Multiple grades.** Should the primary grade be chosen manually, or default to the most recent,
-   or to the one from the highest-trust source (`tpg` over `seller` over `self`)?
-5. **Combined catalogue column.** When sorting a combined column by one catalogue, where do coins
-   with no reference in that catalogue go — last, first, or hidden?
-6. **Vocabulary scope.** Should `lookup` vocabularies be shared library-wide, so mint names typed in
-   one subcollection help another, or kept per field?
+### Resolved
+
+| Question | Answer | Where it lands |
+|---|---|---|
+| Starter packs | None. Test builds are a completely blank slate | 4 |
+| `Details` grades | Sort **just below** their base grade | 4.2, modifier delta −0.4 |
+| Multiple grades | The primary is **chosen by the user**; never inferred from recency or source | 4.2, `is_primary` |
+| Combined catalogue column | Coins with no reference in the sorted catalogue go **to the bottom** | 4.1 |
+| Remembered entries | Dropped. Plain `text` fields, filtered as text | 1.2 |
+| Vocabulary scope | Moot, since vocabularies are gone | — |
+
+### Still open
+
+1. **Grade axis.** The shared axis currently resembles Sheldon 1–70, because that made the worked
+   example readable. Would you rather it were an abstract 0–100 so no standard appears privileged?
+   It changes nothing structurally — only the numbers users type when defining a scale.
+2. **`category` retention.** Kept for fixed lists such as metal. Say so if you would rather every
+   field were plain text for now.
