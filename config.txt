@@ -1,0 +1,53 @@
+# Simple Label Generator config (units: in, mm, cm, pt)
+start_row = 3
+end_row = 100
+
+excel_file = coininfo.xlsx
+flag_folder = flags
+output_file = Coin_Holders.pdf
+
+# Page / layout
+page_size = letter
+page_orientation = landscape
+margin = 0.25in
+cols = 4
+h_spacing = auto       # "auto" or explicit value like 0.2in
+v_spacing = 0.3in      # vertical spacing between the two holders (gap)
+
+# Holder size (rectangular allowed)
+holder_width = 2in
+holder_height = 2in
+
+# Flags/text
+flag_width = 0.46in
+flag_height = 0.2875in
+
+# Circle diameter column (expects mm in the cell)
+diameter_column = A
+country_column = B
+
+# Fonts
+font_name = Helvetica
+# Optional: font_ttf_path = path/to/YourFont.ttf
+font_size = 6
+
+# Appearance
+line_color = #333333
+line_width = 0.5      # in points
+center_mark = x       # none | x | dot
+center_mark_size = 6pt
+
+# Offsets
+front_offset_x_column = ZA
+front_offset_y_column = ZB
+back_offset_x_column = ZC
+back_offset_y_column = ZD
+
+default_front_offset_x = 0mm
+default_front_offset_y = 0mm
+default_back_offset_x = 0mm
+default_back_offset_y = 0mm
+
+# Other
+padding = 5pt
+output_log = false
