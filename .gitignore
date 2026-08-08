@@ -23,3 +23,9 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Ruff / pytest caches
+.ruff_cache/
+
+# Scratch libraries used by screenshot generation
+.scratch/

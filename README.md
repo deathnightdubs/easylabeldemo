@@ -15,20 +15,78 @@ The released label tool lives in a separate repository. This one is for building
 |---|---|
 | [`docs/design/`](docs/design/) | Design specifications. Start with [`OVERVIEW.md`](docs/design/OVERVIEW.md) for plain English, or [`README.md`](docs/design/README.md) for the document index |
 | [`docs/design/schema/base-v1.sql`](docs/design/schema/base-v1.sql) | The normative base schema |
-| `src/numis/` | The core library — no GUI code, so it is testable and reusable from a CLI |
-| `tests/` | Test suite |
+| `src/numis/` | The core library. Imports no GUI toolkit, so it is testable and reusable |
+| `src/numis/ui/` | The Qt interface. The only place a GUI toolkit is imported |
+| `tests/` | Test suite; `tests/ui/` runs Qt headlessly |
+| `tools/` | Development utilities, including the screenshot generator |
 | [`legacy/`](legacy/) | The original single-file label generator and its config, unchanged |
+
+## Screenshots
+
+The spreadsheet-style grid. Columns are the ones you defined; the highlighted cells are values
+whose sort position was worked out automatically and can be confirmed or changed.
+
+![The grid](docs/images/01-modern.png)
+
+The same window with a different subcollection. Chinese cash coins here, sorted by date — note
+that `1736-1795` sorts between 1720 and 1780 rather than alphabetically, and that
+`Guangxu year 30` sorts where you told it to.
+
+![Chinese cash](docs/images/04-sort-values.png)
+
+Searching `通寶` finds it inside longer legends, which needed a specific index design.
+
+![CJK search](docs/images/03-cjk-search.png)
+
+The master view merges every subcollection. *Head of state* is one column even though it reads
+*Ruler* in one subcollection and *Emperor* in another, because it is the same column. Fields that
+only some subcollections use appear as their own columns, blank elsewhere.
+
+![Master view](docs/images/06-master-view.png)
+
+Managing columns, and adding one.
+
+![Columns](docs/images/07-columns.png) ![New column](docs/images/08-new-column.png)
+
+Screenshots are generated headlessly by `tools/screenshots.py`, so they can be regenerated
+rather than going stale.
 
 ## Status
 
-Documents 01 (core data model) and 02 (fields and special systems) are **implemented and tested**:
-210 tests, schema verified equivalent to the normative SQL. Nothing is released, there is no GUI
-yet, and the schema is not yet stable — test libraries are disposable.
+Documents 01 (core data model) and 02 (fields and special systems) are **implemented and tested**,
+and the **spreadsheet-style interface** is built on top of them: 260 tests, schema verified
+equivalent to the normative SQL. Nothing is released and the schema is not yet stable — test
+libraries are disposable.
 
 Not yet built: search and filtering beyond full text (document 03), import/export and Numista
 (04), wishlists (05), labels driven from the database (06), virtual albums and photographs (07).
-Database migrations are also deferred: while the schema is unstable and no real data exists,
-Alembic would only add ceremony. It arrives before the first release.
+The interface also does not yet edit the special systems — catalogue numbers, grades,
+certifications and links exist in the core and are reachable from the CLI, but have no editors in
+the grid yet.
+
+Database migrations are deferred: while the schema is unstable and no real data exists, Alembic
+would only add ceremony. It arrives before the first release.
+
+### Spreadsheet behaviours in the grid
+
+| Behaviour | Notes |
+|---|---|
+| Type straight into cells | No dialog between you and your data |
+| Arrow keys and Tab move around | Enter commits and moves down, as a spreadsheet does |
+| Copy and paste blocks of cells | Tab-separated, so it works to and from Excel |
+| Paste repeats to fill a selection | One value fills a selection; a column repeats sideways |
+| Fill down | `Ctrl+D` |
+| Clear a selection | `Del` |
+| Undo and redo everything | Including pastes and fill-downs, as single steps |
+| Sort by clicking a header | Using the sort keys, so `10 wen` follows `1 wen` |
+| Reorder, hide and resize columns | Right-click a header |
+| Add one row or many | 47 identical coins become 47 rows you can then edit together |
+| Delete to a Trash | Recoverable; nothing is destroyed silently |
+| Right-click a cell → set its sort value | For dates and text the app could not read |
+| Search, including CJK | `通寶` matches inside `乾隆通寶` |
+
+Rejected edits explain themselves in the status bar and never enter the undo history: entering
+`5 stone` in a weight column reports *unknown mass unit 'stone'* and leaves the cell alone.
 
 ### What works today
 
@@ -56,17 +114,29 @@ python3.12 -m venv .venv
 .venv/bin/ruff check src tests
 ```
 
-Try it without writing any code:
+Run the interface:
 
 ```bash
-python -m numis demo /tmp/Demo.numis      # a small library exercising the awkward cases
-python -m numis info /tmp/Demo.numis
-python -m numis list /tmp/Demo.numis --sort date_issued
-python -m numis list /tmp/Demo.numis --subcollection ancients
+python -m numis.ui                        # asks for a library folder
+python -m numis.ui ~/MyCollection.numis   # or open one directly
 ```
 
-The CLI exists to prove the core is usable without an interface. The spreadsheet-style table view
-is the intended way to use the program, and comes next.
+Pointing it at a folder that does not exist yet creates an empty library there.
+
+There is also a command line, which exists to prove the core works without an interface:
+
+```bash
+python -m numis demo ~/Demo.numis         # a small library exercising the awkward cases
+python -m numis info ~/Demo.numis
+python -m numis list ~/Demo.numis --sort date_issued
+python -m numis list ~/Demo.numis --subcollection ancients
+```
+
+Regenerate the screenshots (no display needed):
+
+```bash
+QT_QPA_PLATFORM=offscreen python tools/screenshots.py docs/images
+```
 
 ## Design principles
 

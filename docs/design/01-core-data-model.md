@@ -27,7 +27,7 @@ Recorded so the revisions are easy to absorb.
 | **Soft deletion retained indefinitely** | No automatic purge until you ask for one. |
 | **`net_minor` replaces `total_minor`** | A bug found in testing: the original summed fees in both directions, overstating every profit figure. |
 | **`quantity` removed from `specimen`** | One row is one coin. Bulk add creates 47 rows; totals stay a plain row count. |
-| **The `lookup` field type removed** | Remembered-entry vocabularies are dropped for now. Plain text fields, filtered as text. |
+| **The `lookup` and `category` field types removed** | Remembered-entry vocabularies and fixed lists are both dropped for now. Every field is plain text. |
 | **Registries ship completely empty** | No seed catalogues, grading companies, scales or modifiers in test builds. |
 
 ---
@@ -224,7 +224,7 @@ decisions.
 
 ### 4.1 Typed value tables
 
-Values live in seven tables by storage shape — text, number, money, date, bool, option, json —
+Values live in six tables by storage shape — text, number, money, date, bool, json —
 rather than one stringly-typed table. The reason is blunt: a single text column cannot sort `9`
 before `10`, cannot answer "weight between 5 g and 8 g", and cannot answer "minted between 1850 and
 1875". Those three queries are most of what a collection manager does.
@@ -282,8 +282,8 @@ number, whether the app guessed it or the user typed it:
 half tael     18650  manual
 ```
 
-`field_option.sort_value` provides the same capability for category fields, so a fixed denomination
-list can be ordered once and reused.
+Every field is plain text for now, so the sort key is the only ordering mechanism. If fixed lists
+return later, an ordered list of choices would give the same capability without a per-row sort value.
 
 The principle: **the app proposes, the user disposes, and the app always says which happened.** This
 is the only place anything resembling guessing exists, and it is always visible and always editable.

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "numis"
 version = "0.1.0.dev0"
-description = "Numismatic collection manager — core library"
+description = "Numismatic collection manager"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -14,10 +14,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The interface. The core library deliberately works without it, so a headless install can
+# still import numis, run the CLI and run most of the tests.
+gui = ["PySide6-Essentials>=6.7"]
 dev = [
     "pytest>=8",
     "ruff",
+    "PySide6-Essentials>=6.7",
 ]
+
+[project.scripts]
+numis = "numis.cli:main"
+
+[project.gui-scripts]
+numis-gui = "numis.ui.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -29,6 +39,12 @@ addopts = "-q"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = [".venv", ".scratch"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# Qt must be configured for a headless platform before it is imported, so the imports in the
+# interface test fixtures cannot all sit at the top of the file.
+"tests/ui/conftest.py" = ["E402"]

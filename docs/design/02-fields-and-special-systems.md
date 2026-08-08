@@ -49,7 +49,6 @@ registry entry plus one editor.
 | `money` | money | minor units | `dated` | =, <, >, between, empty |
 | `date` | date | fuzzy span | `allow_range`, `allow_circa`, `calendars`, `display_format` | in year, between years, before, after, in decade, in century, is circa, unknown |
 | `boolean` | bool | 0/1 | `true_label`, `false_label` | is true, is false, empty |
-| `category` | option | option id | `hierarchical`, `allow_new_from_entry`, `is_multi` | is, is not, is any of, is under, empty |
 | `rating` | number | 0–5 | `max_stars`, `allow_half` | =, ≥, ≤, empty |
 | `computed` | not stored | per formula | `expression`, `result_type`, `decimals` | operators of `result_type` |
 | `json` | json | — | — | empty, not empty |
@@ -65,9 +64,10 @@ means adding it later changes no stored data.
 **`purity`** stores per mille, so `0.900`, `900`, `90%` and `22K` are one value entered four ways.
 `entered_as` on the value row preserves the original expression.
 
-**`category`** is retained for genuinely fixed lists, where a controlled set is the point rather than
-an obstacle — metal, shape, edge. Its options carry both `sort_order` and `sort_value`. It is never
-the default for anything a user might invent mid-entry; those are `text`.
+**There is no `category` type either.** Fixed lists for metal, shape and edge were considered and
+dropped for now: every field is plain text, which keeps entry unblocked and filtering simple. A
+controlled list is a real convenience for a handful of attributes, so it will likely return — as an
+addition that changes no stored data, not as a prerequisite.
 
 There is deliberately **no `grade` field type**. Grading is a special system (Part 4.2), because a
 coin can carry several grades from several standards with modifiers and history.
@@ -336,11 +336,9 @@ would-fail and would-change-meaning counts, and takes a backup before proceeding
 
 | From → To | Behaviour |
 |---|---|
-| `text` → `category` | distinct values become options |
 | `text` → `number`/`weight`/`dimension`/`purity` | parsed; failures listed in the dry run |
 | `text` → `date` | parsed by the fuzzy-date parser |
 | `number` ↔ `weight`/`dimension`/`purity` | numerically preserved, unit reinterpreted, with a warning naming the assumed unit |
-| `category` → `text` | option labels become text |
 | `date` → `text` | uses `display`, so the user's own expression survives |
 | anything → `long_text` / `json` | always |
 | any other pair | offered only via `long_text` as an intermediate, with a warning |
@@ -349,7 +347,7 @@ would-fail and would-change-meaning counts, and takes a backup before proceeding
 
 ## Part 6 — Presets
 
-A preset is a JSON file bundling field groups, field definitions, category options, and optionally
+A preset is a JSON file bundling field groups, field definitions, and optionally
 catalogues, grade scales, levels and modifiers. Applying one is
 **additive and merges by key**: an existing key is left alone and reported as skipped, nothing is
 ever deleted, and the user previews exactly what will be added before confirming.
@@ -375,6 +373,7 @@ evaluated by the whitelisted parser of 1.3.
 | Multiple grades | The primary is **chosen by the user**; never inferred from recency or source | 4.2, `is_primary` |
 | Combined catalogue column | Coins with no reference in the sorted catalogue go **to the bottom** | 4.1 |
 | Remembered entries | Dropped. Plain `text` fields, filtered as text | 1.2 |
+| Fixed lists (`category`) | Also dropped. Everything is plain text for now; to be revisited | 1.2 |
 | Vocabulary scope | Moot, since vocabularies are gone | — |
 
 ### Still open
@@ -382,5 +381,5 @@ evaluated by the whitelisted parser of 1.3.
 1. **Grade axis.** The shared axis currently resembles Sheldon 1–70, because that made the worked
    example readable. Would you rather it were an abstract 0–100 so no standard appears privileged?
    It changes nothing structurally — only the numbers users type when defining a scale.
-2. **`category` retention.** Kept for fixed lists such as metal. Say so if you would rather every
-   field were plain text for now.
+2. **When fixed lists return**, should they be a distinct field type again, or a constraint layered
+   on top of `text` so no conversion is ever needed?

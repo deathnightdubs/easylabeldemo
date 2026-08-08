@@ -31,7 +31,7 @@ the same coin, that is three rows, each with its own grade, price, photo and not
 at everything together in a master view.
 
 **You build your own columns.** The program offers types — text, number, weight, measurement, date,
-money, purity, a dropdown list, a star rating, a calculated value — and you create whatever columns
+money, purity, a star rating, a calculated value — and you create whatever columns
 you want from them. Nothing is fixed and nothing is undeletable. If you dislike a column in the
 starting setup, delete it.
 
@@ -198,7 +198,10 @@ currently on screen. Editing is a standard, well-documented part of it — the u
 which cells are editable and handles values being changed
 ([PySide6 table editing guide](https://www.pythonguis.com/faq/editing-pyside6-tableview/)).
 
-What "spreadsheet-easy" means concretely, as features we commit to building:
+**This is now built.** See the screenshots in the [repository README](../../README.md). Everything in
+the table below works, and the interface tests run Qt headlessly so they need no screen.
+
+What "spreadsheet-easy" means concretely:
 
 | Behaviour | Notes |
 |---|---|
@@ -265,10 +268,9 @@ safely wait.
 | Multiple grades | You choose which one is the headline grade. The program never guesses |
 | Combined catalogue column | Coins with no number in the catalogue you sorted by go to the **bottom** |
 | Remembered dropdown entries | Dropped for now. Ordinary text columns, filtered as text |
+| Fixed dropdown lists | Also dropped for now. Every column is plain text; to be revisited |
 
 Two small things left open, neither blocking:
 
 1. **The shared grading ruler** currently uses numbers resembling 1–70, because that made the example
    readable. It could just as easily be an abstract 0–100 so no standard looks privileged.
-2. **Fixed dropdown lists** are kept for things like metal, where a controlled list is genuinely
-   helpful rather than an obstacle. Easy to remove if you would rather everything were plain text.
