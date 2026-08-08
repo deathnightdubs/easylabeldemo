@@ -314,6 +314,68 @@ class CollectionService:
 
     # -- specimens --------------------------------------------------------
 
+    def next_inventory_code(self) -> str:
+        """The lowest unused whole number, as text.
+
+        Deleted specimens still count: their codes remain reserved, because reusing the
+        number of a coin sitting in the Trash would make the two indistinguishable in any
+        note, label or export that already mentions it.
+        """
+        used = {
+            int(code)
+            for code in self.session.scalars(
+                select(Specimen.inventory_code).where(Specimen.inventory_code.is_not(None))
+            )
+            if code and code.isdigit()
+        }
+        candidate = 1
+        while candidate in used:
+            candidate += 1
+        return str(candidate)
+
+    def inventory_code_owner(self, code: str) -> Specimen | None:
+        """The specimen already using ``code``, if any."""
+        return self.session.scalar(
+            select(Specimen).where(Specimen.inventory_code == code)
+        )
+
+    def set_inventory_code(self, specimen: Specimen, code: str | None) -> None:
+        """Set a specimen's identifier, refusing a duplicate with a clear reason."""
+        cleaned = (code or "").strip() or None
+        if cleaned is not None:
+            owner = self.inventory_code_owner(cleaned)
+            if owner is not None and owner.id != specimen.id:
+                raise NumisError(
+                    f"ID {cleaned!r} is already used by "
+                    f"{owner.display_name or 'another coin'}"
+                )
+        specimen.inventory_code = cleaned
+        self.session.flush()
+
+    def move_specimens(
+        self, specimens: Iterable[Specimen], subcollection: Subcollection
+    ) -> int:
+        """Move specimens into another subcollection.
+
+        The values they already hold are untouched. A field the new subcollection does not
+        show simply stops being displayed; it is not deleted, so moving a coin back restores
+        the full picture.
+        """
+        moved = 0
+        for specimen in specimens:
+            if specimen.subcollection_id != subcollection.id:
+                specimen.subcollection_id = subcollection.id
+                moved += 1
+        self.session.flush()
+        return moved
+
+    def subcollection_by_name(self, name: str) -> Subcollection | None:
+        cleaned = name.strip().lower()
+        for subcollection in self.session.scalars(select(Subcollection)):
+            if subcollection.name.strip().lower() == cleaned:
+                return subcollection
+        return None
+
     def add_specimen(
         self,
         subcollection: Subcollection,
@@ -322,11 +384,14 @@ class CollectionService:
         display_name: str = "",
         inventory_code: str | None = None,
         status: str = "owned",
+        auto_code: bool = True,
     ) -> Specimen:
         specimen = Specimen(
             subcollection_id=subcollection.id,
             display_name=display_name,
-            inventory_code=inventory_code,
+            inventory_code=inventory_code
+            if inventory_code is not None or not auto_code
+            else self.next_inventory_code(),
             status=status,
         )
         self.session.add(specimen)

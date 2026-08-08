@@ -99,6 +99,75 @@ class SetSortValue(_Command):
         self.session.commit()
 
 
+class SetDisplayName(_Command):
+    """Rename a coin.
+
+    The name is normally rendered from the subcollection's template, but a name typed by hand
+    is kept as typed and not regenerated.
+    """
+
+    def __init__(self, service: CollectionService, specimen_id: int, name: str) -> None:
+        super().__init__(service, "rename coin")
+        self.specimen_id = specimen_id
+        self.name = name
+        self._previous = ""
+
+    def redo(self) -> None:
+        specimen = self._specimen(self.specimen_id)
+        self._previous = specimen.display_name
+        specimen.display_name = self.name
+        self.session.commit()
+
+    def undo(self) -> None:
+        self._specimen(self.specimen_id).display_name = self._previous
+        self.session.commit()
+
+
+class SetInventoryCode(_Command):
+    """Change a coin's identifier."""
+
+    def __init__(self, service: CollectionService, specimen_id: int, code: str | None) -> None:
+        super().__init__(service, "change ID")
+        self.specimen_id = specimen_id
+        self.code = code
+        self._previous: str | None = None
+
+    def redo(self) -> None:
+        specimen = self._specimen(self.specimen_id)
+        self._previous = specimen.inventory_code
+        self.service.set_inventory_code(specimen, self.code)
+        self.session.commit()
+
+    def undo(self) -> None:
+        self.service.set_inventory_code(self._specimen(self.specimen_id), self._previous)
+        self.session.commit()
+
+
+class MoveSpecimens(_Command):
+    """Move coins into another subcollection, remembering where each came from."""
+
+    def __init__(
+        self, service: CollectionService, specimen_ids: Sequence[int], subcollection_id: int
+    ) -> None:
+        count = len(specimen_ids)
+        super().__init__(service, f"move {count} coin{'s' if count > 1 else ''}")
+        self.specimen_ids = list(specimen_ids)
+        self.subcollection_id = subcollection_id
+        self._previous: dict[int, int] = {}
+
+    def redo(self) -> None:
+        target = self.session.get(Subcollection, self.subcollection_id)
+        specimens = [self._specimen(identifier) for identifier in self.specimen_ids]
+        self._previous = {specimen.id: specimen.subcollection_id for specimen in specimens}
+        self.service.move_specimens(specimens, target)
+        self.session.commit()
+
+    def undo(self) -> None:
+        for specimen_id, subcollection_id in self._previous.items():
+            self._specimen(specimen_id).subcollection_id = subcollection_id
+        self.session.commit()
+
+
 class AddSpecimens(_Command):
     """Add rows. Undoing removes them outright, since they never existed before."""
 

@@ -2,6 +2,15 @@
 
 A ``QAbstractTableModel`` over the collection. Values are loaded a table at a time rather than
 a cell at a time, and every edit becomes an undoable command rather than a direct write.
+
+Two invariants keep the grid honest, both learned from bugs:
+
+* **A refresh is all-or-nothing.** Columns, rows and cached values are built into locals and
+  only then assigned. A failure part-way through used to leave the new columns beside the old
+  rows, which showed one subcollection's coins under another's headings.
+* **A sort is remembered by which column it was, not by its position.** Positions mean
+  different things in different subcollections, so remembering an index silently re-sorted by
+  an unrelated column, or pointed past the end of a narrower subcollection entirely.
 """
 
 from __future__ import annotations
@@ -11,12 +20,15 @@ from collections.abc import Sequence
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QUndoStack
 
+from ..errors import NumisError
 from ..models import FieldDefinition, Specimen, Subcollection
 from ..services import CollectionService, Column
-from .commands import SetValues, validate
+from .commands import SetDisplayName, SetInventoryCode, SetValues, validate
 
-#: Columns the model always shows, before the user's own fields.
-FIXED_COLUMNS = ("Name",)
+#: The identity columns, shown before the user's own fields. All three are editable.
+ID_COLUMN, NAME_COLUMN, SUBCOLLECTION_COLUMN = 0, 1, 2
+FIXED_COLUMNS = ("ID", "Name", "Subcollection")
+FIXED_KEYS = ("__id__", "__name__", "__subcollection__")
 
 #: Cells whose sort position was guessed are tinted, rather than interrupting entry with a
 #: dialog. The queue in the status bar is how the user finds them later.
@@ -29,6 +41,8 @@ class SpecimenTableModel(QAbstractTableModel):
 
     error = Signal(str)
     contents_changed = Signal()
+    #: Emitted when a remembered sort no longer applies, so the view can clear its indicator.
+    sort_cleared = Signal()
 
     def __init__(
         self,
@@ -47,10 +61,15 @@ class SpecimenTableModel(QAbstractTableModel):
         self._fields: list[FieldDefinition] = []
         self._grid: dict[tuple[int, int], str] = {}
         self._flagged: set[tuple[int, int]] = set()
-        self._sort_column = -1
+        self._sort_key: str | None = None
         self._sort_order = Qt.SortOrder.AscendingOrder
 
     # -- loading ----------------------------------------------------------
+
+    @property
+    def sort_key(self) -> str | None:
+        """Which column the grid is sorted by, or ``None`` for creation order."""
+        return self._sort_key
 
     def set_subcollection(self, subcollection: Subcollection | None) -> None:
         """``None`` means the master view: every subcollection merged."""
@@ -66,58 +85,74 @@ class SpecimenTableModel(QAbstractTableModel):
         self.refresh()
 
     def refresh(self) -> None:
-        self.beginResetModel()
-        try:
-            self._columns = (
-                self.service.columns_for(self.subcollection)
-                if self.subcollection is not None
-                else self.service.master_columns()
+        """Reload everything shown. Atomic: either all of it updates, or none of it does."""
+        columns = (
+            self.service.columns_for(self.subcollection)
+            if self.subcollection is not None
+            else self.service.master_columns()
+        )
+        fields = [
+            field
+            for field in (
+                self.service.session.get(FieldDefinition, column.field_id)
+                for column in columns
+                if column.kind == "field"
             )
-            self._fields = [
-                field
-                for field in (
-                    self.service.session.get(FieldDefinition, column.field_id)
-                    for column in self._columns
-                    if column.kind == "field"
-                )
-                if field is not None
-            ]
-            self._specimens = self._load_specimens()
-            self._grid = self.service.value_grid(self._specimens, self._fields)
-            self._flagged = self.service.review_flags(self._specimens, self._fields)
-        finally:
-            self.endResetModel()
+            if field is not None
+        ]
+
+        # A remembered sort only survives if its column is still present here.
+        available = set(FIXED_KEYS) | {column.key for column in columns}
+        if self._sort_key is not None and self._sort_key not in available:
+            self._sort_key = None
+            self.sort_cleared.emit()
+
+        specimens = self._load_specimens(columns)
+        grid = self.service.value_grid(specimens, fields)
+        flagged = self.service.review_flags(specimens, fields)
+
+        self.beginResetModel()
+        self._columns, self._fields = columns, fields
+        self._specimens, self._grid, self._flagged = specimens, grid, flagged
+        self.endResetModel()
         self.contents_changed.emit()
 
-    def _load_specimens(self) -> list[Specimen]:
+    def _load_specimens(self, columns: Sequence[Column]) -> list[Specimen]:
         if self.search_term:
             found = self.service.search(self.search_term, subcollection=self.subcollection)
             return [s for s in found if self.show_trash or s.deleted_at is None]
 
-        if self._sort_column >= len(FIXED_COLUMNS):
-            column = self._columns[self._sort_column - len(FIXED_COLUMNS)]
-            if column.kind == "field":
+        descending = self._sort_order == Qt.SortOrder.DescendingOrder
+
+        if self._sort_key is not None and self._sort_key not in FIXED_KEYS:
+            matching = [column for column in columns if column.key == self._sort_key]
+            if matching and matching[0].kind == "field":
                 try:
                     return self.service.sorted_by_field(
-                        column.key,
+                        self._sort_key,
                         subcollection=self.subcollection,
-                        descending=self._sort_order == Qt.SortOrder.DescendingOrder,
+                        descending=descending,
                         include_deleted=self.show_trash,
                     )
-                except Exception as exc:  # a field type that cannot be sorted
+                except NumisError as exc:  # a field type that cannot be sorted
                     self.error.emit(str(exc))
 
-        # No field sort chosen: creation order, like a spreadsheet.
         query = self.service.live_specimens(
             self.subcollection, include_deleted=self.show_trash
         ).order_by(Specimen.id)
         specimens = list(self.service.session.scalars(query))
-        if self._sort_column == 0:
-            specimens.sort(
-                key=lambda s: (s.display_name or "").lower(),
-                reverse=self._sort_order == Qt.SortOrder.DescendingOrder,
-            )
+
+        if self._sort_key == "__id__":
+            specimens.sort(key=_code_sort_key, reverse=descending)
+        elif self._sort_key == "__name__":
+            specimens.sort(key=lambda s: (s.display_name or "").lower(), reverse=descending)
+        elif self._sort_key == "__subcollection__":
+            specimens.sort(key=lambda s: self._subcollection_name(s).lower(), reverse=descending)
         return specimens
+
+    def _subcollection_name(self, specimen: Specimen) -> str:
+        subcollection = self.service.session.get(Subcollection, specimen.subcollection_id)
+        return subcollection.name if subcollection else ""
 
     # -- Qt model interface ----------------------------------------------
 
@@ -130,13 +165,20 @@ class SpecimenTableModel(QAbstractTableModel):
     def headerData(
         self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole
     ) -> object:
-        if role != Qt.ItemDataRole.DisplayRole:
-            return None
-        if orientation == Qt.Orientation.Horizontal:
+        if orientation == Qt.Orientation.Vertical:
+            return section + 1 if role == Qt.ItemDataRole.DisplayRole else None
+        if role == Qt.ItemDataRole.DisplayRole:
             if section < len(FIXED_COLUMNS):
                 return FIXED_COLUMNS[section]
             return self._columns[section - len(FIXED_COLUMNS)].label
-        return section + 1
+        if role == Qt.ItemDataRole.ToolTipRole and section < len(FIXED_COLUMNS):
+            return {
+                ID_COLUMN: "A unique identifier, assigned automatically and editable.",
+                NAME_COLUMN: "Rendered from the subcollection's naming template, "
+                "or type your own.",
+                SUBCOLLECTION_COLUMN: "Type another subcollection's name to move the coin.",
+            }[section]
+        return None
 
     def flags(self, index: QModelIndex) -> Qt.ItemFlag:
         if not index.isValid():
@@ -144,7 +186,7 @@ class SpecimenTableModel(QAbstractTableModel):
         base = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
         column = self.column_at(index.column())
         if column is None:
-            return base  # the name column is generated from a template
+            return base | Qt.ItemFlag.ItemIsEditable  # ID, Name and Subcollection
         if column.kind != "field":
             return base  # special systems have their own editors
         return base | Qt.ItemFlag.ItemIsEditable
@@ -157,10 +199,7 @@ class SpecimenTableModel(QAbstractTableModel):
 
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
             if column is None:
-                # The name comes from the subcollection's naming template. Without one there
-                # is nothing to render, so fall back to the row's identity rather than
-                # leaving a column that looks broken.
-                return specimen.display_name or specimen.inventory_code or f"#{specimen.id}"
+                return self._fixed_value(specimen, index.column())
             if column.kind != "field":
                 return self._special_cell(specimen, column.kind)
             return self._grid.get((specimen.id, column.field_id), "")
@@ -192,21 +231,46 @@ class SpecimenTableModel(QAbstractTableModel):
                 return "In the Trash. Nothing is deleted permanently until you ask."
         return None
 
+    def _fixed_value(self, specimen: Specimen, section: int) -> str:
+        if section == ID_COLUMN:
+            return specimen.inventory_code or ""
+        if section == NAME_COLUMN:
+            return specimen.display_name or ""
+        return self._subcollection_name(specimen)
+
+    def _special_cell(self, specimen: Specimen, kind: str) -> str:
+        """A read-only summary of a special system, until it has its own editor."""
+        if kind == "catalogues":
+            return self.service.combined_catalogue_cell(specimen)
+        if kind == "grades":
+            grade = self.service.primary_grade(specimen)
+            return grade.raw_text if grade else ""
+        if kind == "certifications":
+            current = self.service.current_certifications(specimen)
+            return ", ".join(
+                f"{c.company.code} {c.cert_number or ''}".strip() for c in current
+            )
+        if kind == "links":
+            return str(len(specimen.links) or "")
+        return ""
+
     def setData(
         self, index: QModelIndex, value: object, role: int = Qt.ItemDataRole.EditRole
     ) -> bool:
         if role != Qt.ItemDataRole.EditRole or not index.isValid():
             return False
-        column = self.column_at(index.column())
-        if column is None or column.kind != "field":
-            return False
-
         specimen = self._specimens[index.row()]
-        field = self.service.session.get(FieldDefinition, column.field_id)
         raw = "" if value is None else str(value).strip()
+        column = self.column_at(index.column())
+
+        if column is None:
+            return self._set_fixed(specimen, index, raw)
+        if column.kind != "field":
+            return False
         if raw == self._grid.get((specimen.id, column.field_id), ""):
             return False
 
+        field = self.service.session.get(FieldDefinition, column.field_id)
         problem = validate(self.service, field, raw)
         if problem:
             # Rejected edits never enter the undo history, and the message names the field
@@ -220,18 +284,64 @@ class SpecimenTableModel(QAbstractTableModel):
         self.contents_changed.emit()
         return True
 
+    def _set_fixed(self, specimen: Specimen, index: QModelIndex, raw: str) -> bool:
+        """Edit one of the identity columns."""
+        section = index.column()
+
+        if section == ID_COLUMN:
+            if raw == (specimen.inventory_code or ""):
+                return False
+            owner = self.service.inventory_code_owner(raw) if raw else None
+            if owner is not None and owner.id != specimen.id:
+                self.error.emit(
+                    f"ID {raw!r} is already used by {owner.display_name or 'another coin'}"
+                )
+                return False
+            self.undo.push(SetInventoryCode(self.service, specimen.id, raw or None))
+
+        elif section == NAME_COLUMN:
+            if raw == (specimen.display_name or ""):
+                return False
+            self.undo.push(SetDisplayName(self.service, specimen.id, raw))
+
+        else:
+            target = self.service.subcollection_by_name(raw)
+            if target is None:
+                self.error.emit(f"There is no subcollection called {raw!r}")
+                return False
+            if target.id == specimen.subcollection_id:
+                return False
+            from .commands import MoveSpecimens
+
+            self.undo.push(MoveSpecimens(self.service, [specimen.id], target.id))
+
+        self.refresh()
+        return True
+
     def sort(self, column: int, order: Qt.SortOrder = Qt.SortOrder.AscendingOrder) -> None:
-        self._sort_column = column
+        self._sort_key = self.key_at(column)
         self._sort_order = order
         self.refresh()
 
     # -- helpers used by the view ----------------------------------------
 
+    def key_at(self, section: int) -> str | None:
+        """A stable identifier for a column position, used to remember sorting."""
+        if section < len(FIXED_COLUMNS):
+            return FIXED_KEYS[section]
+        offset = section - len(FIXED_COLUMNS)
+        if offset >= len(self._columns):
+            return None
+        return self._columns[offset].key
+
     def column_at(self, section: int) -> Column | None:
-        """The user column at a view section, or ``None`` for the generated name column."""
+        """The user column at a view section, or ``None`` for an identity column."""
         if section < len(FIXED_COLUMNS):
             return None
-        return self._columns[section - len(FIXED_COLUMNS)]
+        offset = section - len(FIXED_COLUMNS)
+        if offset >= len(self._columns):
+            return None
+        return self._columns[offset]
 
     def specimen_at(self, row: int) -> Specimen:
         return self._specimens[row]
@@ -243,6 +353,8 @@ class SpecimenTableModel(QAbstractTableModel):
         return self.service.session.get(FieldDefinition, column.field_id)
 
     def is_flagged(self, index: QModelIndex) -> bool:
+        if not index.isValid():
+            return False
         column = self.column_at(index.column())
         if column is None or column.kind != "field":
             return False
@@ -299,7 +411,19 @@ class SpecimenTableModel(QAbstractTableModel):
         rows = sorted({index.row() for index in indexes})
         columns = sorted({index.column() for index in indexes})
         return [
-            [str(self.data(self.index(row, column), Qt.ItemDataRole.DisplayRole) or "")
-             for column in columns]
+            [
+                str(self.data(self.index(row, column), Qt.ItemDataRole.DisplayRole) or "")
+                for column in columns
+            ]
             for row in rows
         ]
+
+
+def _code_sort_key(specimen: Specimen) -> tuple[int, float, str]:
+    """Order identifiers numerically where possible, and put blanks last."""
+    code = specimen.inventory_code or ""
+    if not code:
+        return (2, 0.0, "")
+    if code.isdigit():
+        return (0, float(code), "")
+    return (1, 0.0, code.lower())

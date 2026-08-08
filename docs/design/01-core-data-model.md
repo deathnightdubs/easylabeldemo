@@ -374,14 +374,23 @@ already exists. That is the test I applied when deciding what could safely wait.
 | Bulk lots in one row | Not for now. One row is one coin; `quantity` removed. Bulk add and bulk edit cover the need |
 | Seed data | Test builds ship a completely blank slate |
 | Soft delete retention | Indefinite; no automatic purge |
+| Inventory codes | **Assigned automatically** as the lowest unused whole number, and freely editable. Unique across the library, and codes of deleted coins stay reserved so a number never refers to two coins |
+| Naming template | Kept, but only as a *default*. `display_name` is directly editable and a name typed by hand is never regenerated |
+| Changing subcollection | A coin's subcollection is editable — by typing in the Subcollection column, or with **Move to…** for several at once. Values are kept even when the destination does not show that field |
 
 ### Still open
 
-1. **Inventory codes.** Currently optional and unique across the library. Should they auto-generate
-   on creation, and should numbering restart per subcollection?
-2. **Status vocabulary.** Fixed in the schema. Is the current list right, or should users add their
+1. **Membership in several subcollections at once.** A coin currently has exactly one home
+   subcollection, which is now easy to change. True multi-membership would need a
+   `specimen_subcollection` join table, and raises questions the single-home model does not:
+   which subcollection's naming template applies, whether the master view should show such a coin
+   once or once per membership, and what deleting one membership means. Tags already provide
+   cross-cutting grouping without any of that. Worth deciding deliberately rather than drifting
+   into.
+2. **Per-subcollection numbering.** Identifiers are unique library-wide, so one subcollection's
+   codes are not contiguous. Should numbering optionally restart per subcollection, at the cost of
+   a code no longer identifying a coin on its own?
+3. **Status vocabulary.** Fixed in the schema. Is the current list right, or should users add their
    own statuses?
-3. **Master view scope.** Does it show every subcollection by default, or is it assembled by picking
+4. **Master view scope.** Does it show every subcollection by default, or is it assembled by picking
    which subcollections to combine?
-4. **Naming template.** Is a generated display name wanted at all, or should the first column simply
-   be whichever field the user chooses?

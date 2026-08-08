@@ -11,8 +11,9 @@ EDIT = Qt.ItemDataRole.EditRole
 DISPLAY = Qt.ItemDataRole.DisplayRole
 CLEAR = QItemSelectionModel.SelectionFlag.ClearAndSelect
 
-#: Column positions in the fixture: 0 is the generated Name column.
-RULER, DENOM, DATE, WEIGHT = 1, 2, 3, 4
+#: Column positions in the fixture. The first three are the identity columns.
+ID, NAME, SUBCOLLECTION = 0, 1, 2
+RULER, DENOM, DATE, WEIGHT = 3, 4, 5, 6
 
 
 def add_rows(model, count: int):
@@ -39,18 +40,29 @@ class TestGrid:
             model.headerData(index, Qt.Orientation.Horizontal)
             for index in range(model.columnCount())
         ]
-        assert headers == ["Name", "Ruler", "Denomination", "Date", "Weight"]
+        assert headers == [
+            "ID",
+            "Name",
+            "Subcollection",
+            "Ruler",
+            "Denomination",
+            "Date",
+            "Weight",
+        ]
 
-    def test_the_name_column_is_not_editable(self, sheet):
+    def test_the_identity_columns_are_editable(self, sheet):
+        """ID, Name and Subcollection are all editable, like any other column."""
         model, _ = sheet
         add_rows(model, 1)
-        assert not model.flags(model.index(0, 0)) & Qt.ItemFlag.ItemIsEditable
-        assert model.flags(model.index(0, RULER)) & Qt.ItemFlag.ItemIsEditable
+        for section in (ID, NAME, SUBCOLLECTION):
+            assert model.flags(model.index(0, section)) & Qt.ItemFlag.ItemIsEditable
 
-    def test_a_row_without_a_name_falls_back_to_its_identity(self, sheet):
+    def test_every_row_gets_an_id_without_being_asked(self, sheet):
         model, _ = sheet
-        add_rows(model, 1)
-        assert cell(model, 0, 0).startswith("#")
+        add_rows(model, 3)
+        codes = column_values(model, ID)
+        assert all(codes)
+        assert len(set(codes)) == 3
 
     def test_typing_into_a_cell_stores_a_parsed_value(self, sheet):
         model, _ = sheet

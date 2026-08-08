@@ -51,7 +51,11 @@ class SheetView(QTableView):
         header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         header.customContextMenuRequested.connect(self._show_header_menu)
         self.verticalHeader().setDefaultSectionSize(24)
+        # Hidden because the grid has a real ID column; two different numbers down the left
+        # edge invites the reader to mistake the row position for the coin's identifier.
+        self.verticalHeader().setVisible(False)
 
+        self.move_requested_action: QAction | None = None
         self._build_actions()
 
     def setModel(self, model: object) -> None:
@@ -62,6 +66,10 @@ class SheetView(QTableView):
         if hasattr(model, "contents_changed"):
             model.contents_changed.connect(self._fit_columns)
             self._fit_columns()
+
+    def clear_sort_indicator(self) -> None:
+        """Stop claiming a sort that no longer applies to the columns on screen."""
+        self.horizontalHeader().setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
 
     def _fit_columns(self) -> None:
         """Size columns to their contents, but only for tables small enough for it to be
@@ -195,6 +203,9 @@ class SheetView(QTableView):
                     sort_action.setText("Confirm or change sort value…")
                 menu.addSeparator()
 
+        if self.move_requested_action is not None:
+            menu.addAction(self.move_requested_action)
+            menu.addSeparator()
         menu.addAction(self.copy_action)
         menu.addAction(self.paste_action)
         menu.addAction(self.fill_down_action)
