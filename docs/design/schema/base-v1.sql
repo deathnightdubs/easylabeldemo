@@ -227,32 +227,9 @@ CREATE TABLE field_value_bool (
 CREATE UNIQUE INDEX ux_fvbool      ON field_value_bool(field_definition_id, specimen_id, seq);
 CREATE INDEX        ix_fvbool_spec ON field_value_bool(specimen_id);
 
-CREATE TABLE field_option (
-  id                  INTEGER PRIMARY KEY,
-  uuid                TEXT NOT NULL UNIQUE,
-  field_definition_id INTEGER NOT NULL REFERENCES field_definition(id) ON DELETE CASCADE,
-  parent_id           INTEGER NULL REFERENCES field_option(id) ON DELETE CASCADE,
-  value_key           TEXT NOT NULL,
-  label               TEXT NOT NULL,
-  sort_order          INTEGER NOT NULL DEFAULT 0,
-  sort_value          REAL NULL,             -- explicit numeric order, e.g. denominations
-  colour              TEXT NULL,
-  is_archived         INTEGER NOT NULL DEFAULT 0,
-  created_at          TEXT NOT NULL,
-  updated_at          TEXT NOT NULL
-);
-CREATE UNIQUE INDEX ux_field_option ON field_option(field_definition_id, value_key);
-
-CREATE TABLE field_value_option (
-  id                  INTEGER PRIMARY KEY,
-  field_definition_id INTEGER NOT NULL REFERENCES field_definition(id) ON DELETE CASCADE,
-  specimen_id         INTEGER NOT NULL REFERENCES specimen(id) ON DELETE CASCADE,
-  seq                 INTEGER NOT NULL DEFAULT 0,
-  field_option_id     INTEGER NOT NULL REFERENCES field_option(id) ON DELETE RESTRICT
-);
-CREATE UNIQUE INDEX ux_fvopt      ON field_value_option(field_definition_id, specimen_id, seq);
-CREATE INDEX        ix_fvopt_spec ON field_value_option(specimen_id);
-CREATE INDEX        ix_fvopt_opt  ON field_value_option(field_option_id);
+-- Categories (fixed lists) are deliberately absent for now: every field is plain text.
+-- Reinstating them is additive -- a field_option table plus a field_value_option table --
+-- and changes nothing that already exists.
 
 CREATE TABLE field_value_json (
   id                  INTEGER PRIMARY KEY,

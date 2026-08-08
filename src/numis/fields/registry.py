@@ -8,8 +8,9 @@ There is deliberately no ``grade`` type: grading is a special system, because a 
 carry several grades from several standards with modifiers and history. See
 docs/design/02, Part 4.2.
 
-There is also no ``lookup`` type. Remembered-entry vocabularies were dropped; identity
-fields are plain ``text`` and filtering text is good enough for finding things.
+There is also no ``lookup`` type and no ``category`` type. Remembered-entry vocabularies and
+fixed lists were both dropped: every field is plain ``text`` for now, and filtering text is good
+enough for finding things. Reinstating either is additive and changes no stored data.
 """
 
 from __future__ import annotations
@@ -32,7 +33,6 @@ NUMERIC_OPS = ("eq", "ne", "lt", "lte", "gt", "gte", "between", "empty", "not_em
 DATE_OPS = ("in_year", "between_years", "before", "after", "in_decade", "in_century",
             "is_circa", "unknown", "empty", "not_empty")
 BOOL_OPS = ("is_true", "is_false", "empty")
-OPTION_OPS = ("is", "is_not", "is_any_of", "is_under", "empty", "not_empty")
 PRESENCE_OPS = ("empty", "not_empty")
 
 _APPROX_RE = re.compile(r"^\s*(?:~|c\.?|ca\.?|circa|approx\.?)\s*", re.IGNORECASE)
@@ -191,7 +191,7 @@ def _format_angle(columns: dict[str, Any], config: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# money, date, boolean, category, rating, json
+# money, date, boolean, rating, json
 # ---------------------------------------------------------------------------
 
 
@@ -247,27 +247,6 @@ def _format_bool(columns: dict[str, Any], config: dict[str, Any]) -> str:
     if value is None:
         return ""
     return config.get("true_label", "Yes") if value else config.get("false_label", "No")
-
-
-def _parse_option(raw: Any, config: dict[str, Any]) -> dict[str, Any]:
-    """Resolve a category value.
-
-    ``config['options']`` maps ``value_key`` and label (case-insensitively) to option id;
-    the service layer supplies it, so this stays a pure function.
-    """
-    if isinstance(raw, int):
-        return {"field_option_id": raw}
-    options = config.get("options") or {}
-    key = str(raw).strip()
-    for candidate in (key, key.lower()):
-        if candidate in options:
-            return {"field_option_id": options[candidate]}
-    raise FieldParseError(raw, "category", "not one of the available options")
-
-
-def _format_option(columns: dict[str, Any], config: dict[str, Any]) -> str:
-    labels = config.get("labels") or {}
-    return str(labels.get(columns.get("field_option_id"), ""))
 
 
 def _parse_rating(raw: Any, config: dict[str, Any]) -> dict[str, Any]:
@@ -465,22 +444,6 @@ register(
         parse=_parse_bool,
         format=_format_bool,
         default_config={"true_label": "Yes", "false_label": "No"},
-    )
-)
-
-register(
-    FieldType(
-        key="category",
-        label="Fixed list",
-        storage="option",
-        canonical_unit=None,
-        supports_multi=True,
-        filter_operators=OPTION_OPS,
-        parse=_parse_option,
-        format=_format_option,
-        sort_column="field_option_id",
-        description="A controlled list, for things like metal or shape.",
-        default_config={"hierarchical": False},
     )
 )
 

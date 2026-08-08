@@ -28,7 +28,6 @@ from .models import (
     FeatureBinding,
     FieldDefinition,
     FieldGroup,
-    FieldOption,
     FieldValueDate,
     FieldValueText,
     GradeLevel,
@@ -150,37 +149,7 @@ class CollectionService:
         if field.data_type == "money":
             config.setdefault("decimals", self.currency_decimals)
             config.setdefault("symbol", self.meta.currency_symbol)
-        if field.data_type == "category":
-            options = {}
-            labels = {}
-            for option in field.options:
-                options[option.value_key] = option.id
-                options[option.value_key.lower()] = option.id
-                options[option.label.lower()] = option.id
-                labels[option.id] = option.label
-            config.setdefault("options", options)
-            config.setdefault("labels", labels)
         return config
-
-    def add_option(
-        self,
-        field: FieldDefinition,
-        value_key: str,
-        label: str,
-        *,
-        sort_order: int = 0,
-        sort_value: float | None = None,
-    ) -> FieldOption:
-        option = FieldOption(
-            field_definition_id=field.id,
-            value_key=value_key,
-            label=label,
-            sort_order=sort_order,
-            sort_value=sort_value,
-        )
-        self.session.add(option)
-        self.session.flush()
-        return option
 
     def show_field(
         self,
@@ -414,8 +383,13 @@ class CollectionService:
         self.session.delete(specimen)
         self.session.flush()
 
-    def live_specimens(self, subcollection: Subcollection | None = None) -> Select[tuple[Specimen]]:
-        query = select(Specimen).where(Specimen.deleted_at.is_(None))
+    def live_specimens(
+        self, subcollection: Subcollection | None = None, *, include_deleted: bool = False
+    ) -> Select[tuple[Specimen]]:
+        """Specimens, excluding the Trash unless asked otherwise."""
+        query = select(Specimen)
+        if not include_deleted:
+            query = query.where(Specimen.deleted_at.is_(None))
         if subcollection is not None:
             query = query.where(Specimen.subcollection_id == subcollection.id)
         return query
@@ -511,10 +485,122 @@ class CollectionService:
             return ""
         columns = {
             name: getattr(row, name)
-            for name in ("value", "amount_minor", "as_of", "display", "field_option_id")
+            for name in ("value", "amount_minor", "as_of", "display")
             if hasattr(row, name)
         }
         return format_value(field.data_type, columns, self.field_config(field))
+
+    def raw_columns(
+        self, specimen: Specimen, field: FieldDefinition | str, *, seq: int = 0
+    ) -> dict[str, Any] | None:
+        """The stored column values for one value, or ``None`` when unset.
+
+        Used by undo: restoring these exactly puts a value back as it was, including a
+        manually chosen sort key that re-parsing the display text would lose.
+        """
+        field = self._resolve_field(field)
+        row = self.get_value(specimen, field, seq=seq)
+        if row is None:
+            return None
+        model = self._model_for(field)
+        skip = {"id", "field_definition_id", "specimen_id", "seq", "_sa_instance_state"}
+        return {
+            name: getattr(row, name)
+            for name in model.__table__.columns.keys()  # noqa: SIM118
+            if name not in skip
+        }
+
+    def write_columns(
+        self,
+        specimen: Specimen,
+        field: FieldDefinition | str,
+        columns: dict[str, Any] | None,
+        *,
+        seq: int = 0,
+    ) -> None:
+        """Write stored column values directly, or delete the value when ``None``.
+
+        Bypasses parsing on purpose: this is the inverse of :meth:`raw_columns` and exists
+        for undo, not for user input.
+        """
+        field = self._resolve_field(field)
+        model = self._model_for(field)
+        if model is None:
+            raise NumisError(f"{field.data_type} fields cannot store values")
+        existing = self.get_value(specimen, field, seq=seq)
+        if columns is None:
+            if existing is not None:
+                self.session.delete(existing)
+                self.session.flush()
+            return
+        if existing is None:
+            existing = model(field_definition_id=field.id, specimen_id=specimen.id, seq=seq)
+            self.session.add(existing)
+        for name, value in columns.items():
+            setattr(existing, name, value)
+        self.session.flush()
+
+    def value_grid(
+        self, specimens: Sequence[Specimen], fields: Sequence[FieldDefinition]
+    ) -> dict[tuple[int, int], str]:
+        """Formatted values for many specimens and fields at once.
+
+        A table view asking for one value per cell would issue a query per cell; this loads
+        each storage table once instead, which is what keeps scrolling responsive.
+        """
+        grid: dict[tuple[int, int], str] = {}
+        if not specimens or not fields:
+            return grid
+        specimen_ids = [specimen.id for specimen in specimens]
+
+        by_storage: dict[str, list[FieldDefinition]] = {}
+        for field in fields:
+            storage = get_field_type(field.data_type).storage
+            if storage:
+                by_storage.setdefault(storage, []).append(field)
+
+        for storage, storage_fields in by_storage.items():
+            model = VALUE_MODELS[storage]
+            configs = {field.id: self.field_config(field) for field in storage_fields}
+            types = {field.id: field.data_type for field in storage_fields}
+            rows = self.session.scalars(
+                select(model).where(
+                    model.field_definition_id.in_([f.id for f in storage_fields]),
+                    model.specimen_id.in_(specimen_ids),
+                    model.seq == 0,
+                )
+            )
+            for row in rows:
+                columns = {
+                    name: getattr(row, name)
+                    for name in ("value", "amount_minor", "as_of", "display")
+                    if hasattr(row, name)
+                }
+                grid[(row.specimen_id, row.field_definition_id)] = format_value(
+                    types[row.field_definition_id], columns, configs[row.field_definition_id]
+                )
+        return grid
+
+    def review_flags(
+        self, specimens: Sequence[Specimen], fields: Sequence[FieldDefinition]
+    ) -> set[tuple[int, int]]:
+        """Cells whose sort position the application guessed or could not work out."""
+        flagged: set[tuple[int, int]] = set()
+        if not specimens or not fields:
+            return flagged
+        specimen_ids = [specimen.id for specimen in specimens]
+        field_ids = [field.id for field in fields]
+        for model in (FieldValueText, FieldValueDate):
+            rows = self.session.scalars(
+                select(model).where(
+                    model.needs_review == 1,
+                    model.field_definition_id.in_(field_ids),
+                    model.specimen_id.in_(specimen_ids),
+                )
+            )
+            for row in rows:
+                flagged.add((row.specimen_id, row.field_definition_id))
+        return flagged
 
     def set_sort_value(
         self, specimen: Specimen, field: FieldDefinition | str, sort_value: float, *, seq: int = 0
@@ -565,6 +651,7 @@ class CollectionService:
         *,
         subcollection: Subcollection | None = None,
         descending: bool = False,
+        include_deleted: bool = False,
     ) -> list[Specimen]:
         """Specimens ordered by one field, with missing values last.
 
@@ -592,7 +679,7 @@ class CollectionService:
         # For text fields with numeric ordering enabled, fall back to the text itself when
         # no sort value has been decided, so the column is never randomly ordered.
         query = (
-            self.live_specimens(subcollection)
+            self.live_specimens(subcollection, include_deleted=include_deleted)
             .outerjoin(
                 model,
                 (model.specimen_id == Specimen.id)
@@ -731,6 +818,7 @@ class CollectionService:
         *,
         subcollection: Subcollection | None = None,
         descending: bool = False,
+        include_deleted: bool = False,
     ) -> list[Specimen]:
         """Specimens ordered by one catalogue's numbers.
 
@@ -738,7 +826,7 @@ class CollectionService:
         This is what makes a combined catalogue column still sortable by a chosen catalogue.
         """
         query = (
-            self.live_specimens(subcollection)
+            self.live_specimens(subcollection, include_deleted=include_deleted)
             .outerjoin(
                 CatalogReference,
                 (CatalogReference.specimen_id == Specimen.id)

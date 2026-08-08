@@ -18,7 +18,8 @@ package name `numis`. Renaming later touches only import paths, never the schema
 | # | Document | Scope | Status |
 |---|---|---|---|
 | 01 | [Core data model](01-core-data-model.md) | Library, subcollections, specimens, field storage, sort keys, history ledger, tags, search | **Implemented** |
-| 02 | [Fields and special systems](02-fields-and-special-systems.md) | Field type palette, feature bindings, display labels, catalogues, grades, certifications, external links, schema changes, presets | **Implemented** |
+| 02 | [Fields and special systems](02-fields-and-special-systems.md) | Field type palette, feature bindings, display labels, catalogues, grades, certifications, external links, schema changes, presets | **Implemented** (the grid edits ordinary fields; the special systems have no editors yet) |
+| — | The interface | Spreadsheet-style grid, undo, copy and paste, column management | **Implemented**; not separately specified, since it is a view over 01 and 02 |
 | 03 | Search, sorting and filtering | Filter grammar, query builder, saved views, smart collections, per-catalogue and per-scale sorting in practice | Next |
 | 04 | Import and export | Spreadsheet mapping, Numista ID import with user-defined field mapping, preset sharing | Not started |
 | 05 | Wishlist and slot matching | Slot criteria, the deterministic matching engine, fulfilment states | Not started |

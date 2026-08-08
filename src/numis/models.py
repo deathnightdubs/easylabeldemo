@@ -141,10 +141,6 @@ class FieldDefinition(UuidMixin, TimestampMixin, Base):
     default_value_json: Mapped[str | None] = mapped_column(Text)
     origin_preset: Mapped[str | None] = mapped_column(String)
 
-    options: Mapped[list[FieldOption]] = relationship(
-        back_populates="field", cascade="all, delete-orphan", order_by="FieldOption.sort_order"
-    )
-
 
 class SubcollectionBlock(UuidMixin, TimestampMixin, Base):
     """Which fields and special blocks a subcollection shows, and how they are labelled.
@@ -377,42 +373,6 @@ class FieldValueBool(FieldValueMixin, Base):
     value: Mapped[bool] = mapped_column(Integer, nullable=False)
 
 
-class FieldOption(UuidMixin, TimestampMixin, Base):
-    """A choice within a ``category`` field."""
-
-    __tablename__ = "field_option"
-    __table_args__ = (
-        Index("ux_field_option", "field_definition_id", "value_key", unique=True),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    field_definition_id: Mapped[int] = mapped_column(
-        ForeignKey("field_definition.id", ondelete="CASCADE"), nullable=False
-    )
-    parent_id: Mapped[int | None] = mapped_column(ForeignKey("field_option.id", ondelete="CASCADE"))
-    value_key: Mapped[str] = mapped_column(String, nullable=False)
-    label: Mapped[str] = mapped_column(String, nullable=False)
-    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    sort_value: Mapped[float | None] = mapped_column()
-    colour: Mapped[str | None] = mapped_column(String)
-    is_archived: Mapped[bool] = mapped_column(Integer, nullable=False, default=0)
-
-    field: Mapped[FieldDefinition] = relationship(back_populates="options")
-
-
-class FieldValueOption(FieldValueMixin, Base):
-    __tablename__ = "field_value_option"
-    __table_args__ = _value_indexes(
-        "fvopt",
-        "field_value_option",
-        Index("ix_fvopt_opt", "field_option_id"),
-    )
-
-    field_option_id: Mapped[int] = mapped_column(
-        ForeignKey("field_option.id", ondelete="RESTRICT"), nullable=False
-    )
-
-
 class FieldValueJson(FieldValueMixin, Base):
     """Display-only escape hatch; never sorted or filtered."""
 
@@ -429,7 +389,6 @@ VALUE_MODELS = {
     "money": FieldValueMoney,
     "date": FieldValueDate,
     "bool": FieldValueBool,
-    "option": FieldValueOption,
     "json": FieldValueJson,
 }
 
