@@ -255,18 +255,20 @@ safely wait.
 
 ---
 
-## What we still need to decide
+## Decisions now settled
 
-Nothing below blocks starting work, but each one changes some detail:
+| Question | Answer |
+|---|---|
+| Starting content | Completely blank. Test builds contain no example catalogues, scales or columns |
+| Bulk lots | One row is one coin. Adding 47 coins creates 47 rows in one action; your total says 47 |
+| Details grades | Sort immediately **below** their base grade |
+| Multiple grades | You choose which one is the headline grade. The program never guesses |
+| Combined catalogue column | Coins with no number in the catalogue you sorted by go to the **bottom** |
+| Remembered dropdown entries | Dropped for now. Ordinary text columns, filtered as text |
 
-1. **Starting content.** Grading scales and catalogues ship empty. Do you want optional one-click
-   starter packs (a Sheldon scale, a KM catalogue) that you can accept, ignore or edit — or a
-   completely blank slate?
-2. **Bulk lots.** If a row represents 47 coins, does your collection total say 47 or 1?
-3. **Details grades.** Should `AU Details` sort just below `AU`, or just above the next grade down?
-4. **Multiple grades.** When a coin has several, should the headline one be picked by you, be the most
-   recent, or automatically prefer a grading company's over a dealer's?
-5. **Combined catalogue column.** When sorting it by one catalogue, where do coins with no number in
-   that catalogue go — top, bottom, or hidden?
-6. **Dropdown lists.** Should remembered entries like mint names be shared across all subcollections,
-   or kept separate per column?
+Two small things left open, neither blocking:
+
+1. **The shared grading ruler** currently uses numbers resembling 1–70, because that made the example
+   readable. It could just as easily be an abstract 0–100 so no standard looks privileged.
+2. **Fixed dropdown lists** are kept for things like metal, where a controlled list is genuinely
+   helpful rather than an obstacle. Easy to remove if you would rather everything were plain text.

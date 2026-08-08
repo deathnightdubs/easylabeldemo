@@ -132,7 +132,8 @@ CREATE TABLE specimen (
   status           TEXT NOT NULL DEFAULT 'owned' CHECK (status IN
                      ('owned','ordered','sold','traded','gifted','lost','stolen',
                       'returned','on_loan','wanted')),
-  quantity         INTEGER NOT NULL DEFAULT 1 CHECK (quantity >= 0),
+  -- One row is exactly one coin. There is no quantity column: a lot of 47 coins
+  -- is 47 rows, created in one action by bulk add. Per-row lots may come later.
   is_favourite     INTEGER NOT NULL DEFAULT 0,
   created_at       TEXT NOT NULL,
   updated_at       TEXT NOT NULL,
@@ -477,7 +478,6 @@ CREATE TABLE specimen_event (
   occurred_on        TEXT NULL,
   occurred_precision TEXT NOT NULL DEFAULT 'exact_day' CHECK (occurred_precision IN
                        ('exact_day','exact_month','exact_year','circa','unknown')),
-  quantity           INTEGER NOT NULL DEFAULT 1,
   amount_minor       INTEGER NULL,
   fees_minor         INTEGER NULL,
   shipping_minor     INTEGER NULL,
@@ -593,3 +593,28 @@ CREATE VIRTUAL TABLE specimen_fts USING fts5(
   content_rowid = 'specimen_id',
   tokenize      = "unicode61 remove_diacritics 2"
 );
+
+-- An external-content FTS table does not update itself. These triggers keep the index in
+-- step with specimen_search; without them, searches silently return stale results.
+CREATE TRIGGER specimen_search_ai AFTER INSERT ON specimen_search BEGIN
+  INSERT INTO specimen_fts(rowid, title_blob, text_blob, catalog_blob, note_blob, cjk_blob)
+  VALUES (new.specimen_id, new.title_blob, new.text_blob, new.catalog_blob,
+          new.note_blob, new.cjk_blob);
+END;
+
+CREATE TRIGGER specimen_search_ad AFTER DELETE ON specimen_search BEGIN
+  INSERT INTO specimen_fts(specimen_fts, rowid, title_blob, text_blob, catalog_blob,
+                           note_blob, cjk_blob)
+  VALUES ('delete', old.specimen_id, old.title_blob, old.text_blob, old.catalog_blob,
+          old.note_blob, old.cjk_blob);
+END;
+
+CREATE TRIGGER specimen_search_au AFTER UPDATE ON specimen_search BEGIN
+  INSERT INTO specimen_fts(specimen_fts, rowid, title_blob, text_blob, catalog_blob,
+                           note_blob, cjk_blob)
+  VALUES ('delete', old.specimen_id, old.title_blob, old.text_blob, old.catalog_blob,
+          old.note_blob, old.cjk_blob);
+  INSERT INTO specimen_fts(rowid, title_blob, text_blob, catalog_blob, note_blob, cjk_blob)
+  VALUES (new.specimen_id, new.title_blob, new.text_blob, new.catalog_blob,
+          new.note_blob, new.cjk_blob);
+END;
