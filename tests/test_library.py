@@ -114,16 +114,20 @@ def test_a_newer_library_is_refused_rather_than_guessed_at(tmp_path: Path):
     assert "newer version" in str(info.value)
 
 
-def test_an_older_library_reports_that_migration_is_not_implemented(tmp_path: Path):
+def test_an_older_library_is_migrated_rather_than_refused(tmp_path: Path):
+    """See tests/test_migrations.py for the detail; this checks open_library's part."""
     path = tmp_path / "Test.numis"
     library = create_library(path)
     with library.session() as session:
         library.meta(session).schema_version = "0000"
     library.close()
 
-    with pytest.raises(SchemaVersionError) as info:
-        open_library(path)
-    assert "Migration is not implemented" in str(info.value)
+    reopened = open_library(path)
+    try:
+        with reopened.session() as session:
+            assert reopened.meta(session).schema_version == SCHEMA_VERSION
+    finally:
+        reopened.close()
 
 
 def test_foreign_keys_are_enforced_on_every_connection(tmp_path: Path):

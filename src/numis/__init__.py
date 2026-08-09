@@ -8,5 +8,10 @@ Package name ``numis`` is a placeholder until the product is named.
 
 __version__ = "0.1.0.dev0"
 
-SCHEMA_VERSION = "0001"
-"""Base schema revision. Bumped when the schema changes; see docs/design/schema/."""
+SCHEMA_VERSION = "0002"
+"""Current schema revision.
+
+**Bump this and add a migration in ``numis.migrations`` for every schema change.**
+Changing the models without doing so means existing libraries will not open, which is
+how a real collection gets locked out by an upgrade.
+"""

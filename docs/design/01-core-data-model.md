@@ -132,9 +132,19 @@ explanation.
 default in SQLite and is set per connection in a single SQLAlchemy event handler, because forgetting
 it silently disables every `REFERENCES` clause in the schema.
 
-Alembic owns migrations; `library_meta.schema_version` records the revision. A timestamped backup is
-copied into `backups/` before any migration runs. Opening a library newer than the running
-application is refused rather than attempted.
+`library_meta.schema_version` records the revision, and `numis.migrations` holds an ordered list of
+steps from one version to the next. Opening a library written by an older build applies the
+outstanding steps; a library from a *newer* build is refused rather than guessed at.
+
+A timestamped backup is copied into `backups/` before any migration runs. Migrations are written in
+plain SQL rather than through the models — the models describe the *current* schema, so using them
+to migrate an older one is circular — and each is idempotent, checking the state it is about to
+change so that re-running it is harmless.
+
+After migrating, the application compares the database against the models and refuses to continue if
+anything the code expects is absent, naming what is missing. That check exists because a change
+once shipped without a migration and the resulting failure surfaced as a stack trace from inside the
+table view: unreadable, and impossible to act on.
 
 ---
 

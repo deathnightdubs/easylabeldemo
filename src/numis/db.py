@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from . import SCHEMA_VERSION, __version__
 from .errors import LibraryError, SchemaVersionError
+from .migrations import Migration, pending
 from .models import FTS_DDL, Base, LibraryMeta
 from .sqltypes import utcnow
 
@@ -107,6 +108,24 @@ class Library:
             raw.close()
         return target
 
+    def migrate(self, from_version: str) -> list[Migration]:
+        """Apply outstanding migrations, taking a backup first.
+
+        The backup is not optional. A migration that goes wrong on someone's collection
+        with no copy to fall back to is the worst thing this application could do.
+        """
+        outstanding = pending(from_version)
+        if not outstanding:
+            return []
+
+        self.backup(f"pre-{SCHEMA_VERSION}")
+        for migration in outstanding:
+            with self.engine.begin() as connection:
+                migration.apply(connection)
+        with self.session() as session:
+            self.meta(session).schema_version = SCHEMA_VERSION
+        return outstanding
+
     def close(self) -> None:
         self.engine.dispose()
 
@@ -161,11 +180,44 @@ def create_library(
     return library
 
 
-def open_library(path: str | Path) -> Library:
-    """Open an existing library.
+def missing_schema_items(library: Library) -> list[str]:
+    """Tables and columns the models expect but the database does not have.
 
-    Refuses a library written by a newer application rather than attempting to read it:
-    guessing at a future schema is how data gets destroyed.
+    A safety net: if a schema change ever ships without a migration again, this turns it
+    into one readable sentence instead of a stack trace from inside the interface.
+    """
+    problems: list[str] = []
+    raw = library.engine.raw_connection()
+    try:
+        connection = raw.driver_connection
+        present = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        for table in Base.metadata.sorted_tables:
+            if table.name not in present:
+                problems.append(f"table {table.name}")
+                continue
+            columns = {
+                row[1] for row in connection.execute(f"PRAGMA table_xinfo({table.name})")
+            }
+            problems.extend(
+                f"{table.name}.{column.name}"
+                for column in table.columns
+                if column.name not in columns
+            )
+    finally:
+        raw.close()
+    return problems
+
+
+def open_library(path: str | Path) -> Library:
+    """Open an existing library, migrating it if it was written by an older version.
+
+    A library from a *newer* version is refused rather than read: guessing at a future
+    schema is how data gets destroyed. An older one is backed up and brought forward.
     """
     path = Path(path)
     db_path = path / DB_FILENAME
@@ -174,17 +226,31 @@ def open_library(path: str | Path) -> Library:
 
     library = _library(path)
     with library.session() as session:
+        version = library.meta(session).schema_version
+
+    if version > SCHEMA_VERSION:
+        library.close()
+        raise SchemaVersionError(
+            f"{db_path} was written by a newer version of the application "
+            f"(library schema {version}, this build understands {SCHEMA_VERSION}). "
+            "Update the application to open it."
+        )
+
+    if version < SCHEMA_VERSION:
+        library.migrate(version)
+
+    outstanding = missing_schema_items(library)
+    if outstanding:
+        library.close()
+        raise SchemaVersionError(
+            f"{db_path} is missing {len(outstanding)} item(s) the application expects: "
+            + ", ".join(outstanding[:6])
+            + ("…" if len(outstanding) > 6 else "")
+            + ". This is a bug: a schema change shipped without a migration."
+        )
+
+    with library.session() as session:
         meta = library.meta(session)
-        if meta.schema_version > SCHEMA_VERSION:
-            raise SchemaVersionError(
-                f"{db_path} was written by a newer version "
-                f"(library schema {meta.schema_version}, this build supports {SCHEMA_VERSION})"
-            )
-        if meta.schema_version < SCHEMA_VERSION:
-            raise SchemaVersionError(
-                f"{db_path} uses schema {meta.schema_version}; this build expects "
-                f"{SCHEMA_VERSION}. Migration is not implemented yet."
-            )
         meta.app_version_last_opened = __version__
         meta.updated_at = utcnow()
     return library
