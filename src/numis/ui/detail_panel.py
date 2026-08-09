@@ -17,7 +17,6 @@ from datetime import date
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -49,6 +48,7 @@ from ..models import (
     GradingCompany,
     Specimen,
     SpecimenGrade,
+    SpecimenGradeModifier,
 )
 from ..services import CollectionService
 from .commands import readable
@@ -166,17 +166,18 @@ class CatalogueReferenceDialog(QDialog):
         self.catalogue = _combo_with_new(catalogues)
         self.number = QLineEdit()
         self.number.setPlaceholderText("2073, A54.2, 22.123")
-        self.primary = QCheckBox("Show this one first")
-        self.primary.setChecked(not catalogues)
-
         form = QFormLayout()
         form.addRow("Catalogue", self.catalogue)
         form.addRow("Number", self.number)
-        form.addRow("", self.primary)
-        if not catalogues:
-            note = QLabel("No catalogues exist yet — choose “New…” to add your first.")
-            note.setStyleSheet("color: #666;")
-            form.addRow("", note)
+        note = QLabel(
+            "No catalogues exist yet — choose “New…” to add your first."
+            if not catalogues
+            else "New entries go to the end; reorder them with the arrows to change which one "
+            "a single-value column shows."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #666;")
+        form.addRow("", note)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -229,40 +230,41 @@ class CertificationDialog(QDialog):
         )
         self.number = QLineEdit()
         self.number.setPlaceholderText("optional — endorsements often have none")
-        self.grade = QComboBox()
-        self.grade.addItem("(none)", None)
-        for grade in service.session.scalars(
-            select(SpecimenGrade).where(SpecimenGrade.specimen_id == specimen.id)
-        ):
-            self.grade.addItem(grade.raw_text, grade.id)
+        # One dropdown for what this certification is *about*. A grading company certifies a
+        # grade; a sticker company certifies a sticker, which is its own opinion of somebody
+        # else's grade — so both belong in the same list.
+        #
+        # The payload is a "kind:id" string rather than a tuple because Qt compares combo data
+        # as variants, and it cannot match a Python tuple — findData would silently return -1
+        # and the choice would be lost.
+        self.awarded = QComboBox()
+        self.awarded.addItem("(nothing in particular)", None)
+        for grade in service.grades_for(specimen):
+            self.awarded.addItem(f"grade: {grading.render(grade)}", f"grade:{grade.id}")
+        for grade in service.grades_for(specimen):
+            for link in grade.modifier_links:
+                if link.modifier is not None and link.modifier.kind == "sticker":
+                    issuer = link.modifier.issuer or link.modifier.label
+                    says = f" {link.detail}" if link.detail else ""
+                    self.awarded.addItem(
+                        f"sticker: {issuer}{says}  (on {grading.render(grade)})",
+                        f"sticker:{link.id}",
+                    )
         self.graded_on = QLineEdit()
         self.graded_on.setPlaceholderText("YYYY-MM-DD, optional")
         self.url = QLineEdit()
         self.url.setPlaceholderText("https://… the company's verification page, optional")
-        self.sticker = QComboBox()
-        self.sticker.addItem("(none)", None)
-        for modifier in service.modifiers("sticker"):
-            self.sticker.addItem(
-                f"{modifier.issuer or modifier.label}", modifier.code
-            )
-        self.sticker_detail = QLineEdit()
-        self.sticker_detail.setPlaceholderText("green, gold — what this sticker says")
-        self.primary = QCheckBox("Show this one first")
-        self.primary.setChecked(True)
 
         form = QFormLayout()
         form.addRow("Company", self.company)
         form.addRow("Certificate no.", self.number)
-        form.addRow("Grade on it", self.grade)
+        form.addRow("Awarded for", self.awarded)
         form.addRow("Graded on", self.graded_on)
         form.addRow("Verification link", self.url)
-        form.addRow("Sticker awarded", self.sticker)
-        form.addRow("Sticker says", self.sticker_detail)
-        form.addRow("", self.primary)
         note = QLabel(
-            "Several certifications can be current at once, so adding an endorsement does not "
-            "replace a grading company's own. A sticker chosen here is recorded as issued by "
-            "this certification and attached to the grade above."
+            "Several certifications can be current at once, so adding one does not replace "
+            "another. A sticker is a certification in its own right: record the sticker on the "
+            "grade first, then add the sticker company here and pick it above."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color: #666;")
@@ -293,6 +295,27 @@ class CertificationDialog(QDialog):
         if not accepted:
             return None
         return self.service.create_grading_company(code.strip(), name.strip() or code.strip())
+
+    def awarded_for(self) -> tuple[str, int] | None:
+        """What this certification is about: a grade, or a sticker on one.
+
+        Returns ``("grade", id)`` or ``("sticker", link_id)``, where the sticker id identifies
+        the instance on a particular grade rather than the modifier itself — the same sticker
+        can sit on several coins.
+        """
+        chosen = self.awarded.currentData()
+        if not chosen:
+            return None
+        kind, _, identifier = str(chosen).partition(":")
+        return kind, int(identifier)
+
+    def select_awarded(self, kind: str, identifier: int) -> bool:
+        """Preselect an entry. Used when editing, and by tests."""
+        index = self.awarded.findData(f"{kind}:{identifier}")
+        if index < 0:
+            return False
+        self.awarded.setCurrentIndex(index)
+        return True
 
     def parsed_date(self) -> date | None:
         text = self.graded_on.text().strip()
@@ -628,7 +651,6 @@ class DetailPanel(QDockWidget):
         number = dialog.number.text().strip()
         if catalogue is None or not number:
             return
-        primary = dialog.primary.isChecked()
         specimen_id, catalogue_id = specimen.id, catalogue.id
 
         def build(service: CollectionService) -> object:
@@ -636,14 +658,9 @@ class DetailPanel(QDockWidget):
                 service.session.get(Specimen, specimen_id),
                 service.session.get(Catalog, catalogue_id),
                 number,
-                is_primary=primary,
             )
 
-        try:
-            self._apply(AddChildRow(self.service, "add catalogue number", build))
-        except Exception as exc:  # duplicate number, mostly
-            self.service.session.rollback()
-            QMessageBox.warning(self, "Catalogue number", _readable(exc))
+        self._apply(AddChildRow(self.service, "add catalogue number", build))
 
     def _add_grade(self) -> None:
         from .commands import AddChildRow
@@ -651,40 +668,45 @@ class DetailPanel(QDockWidget):
         specimen = self.specimen
         if specimen is None:
             return
-        dialog = GradeDialog(self.service, self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        dialog = GradeDialog(self.service, None, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.validate():
             return
         scale = dialog.resolve_scale()
-        if scale is None:
-            return
-        level_label = dialog.resolve_level(scale)
-        if level_label is None:
-            return
-
-        specimen_id, scale_id = specimen.id, scale.id
-        modifiers = dialog.selected_modifier_codes()
-        detail = dialog.detail.text().strip() or None
-        source = dialog.source.currentText()
-        assigned_by = dialog.assigned_by.text().strip() or None
-        primary = dialog.primary.isChecked()
+        scale_id = scale.id if scale is not None else None
+        specimen_id = specimen.id
+        values = dialog.values()
 
         def build(service: CollectionService) -> object:
             return service.add_grade(
                 service.session.get(Specimen, specimen_id),
-                service.session.get(GradeScale, scale_id),
-                level_label,
-                modifiers=modifiers,
-                source=source,
-                assigned_by=assigned_by,
-                detail_note=detail,
-                is_primary=primary,
+                service.session.get(GradeScale, scale_id) if scale_id else None,
+                values["grade_label"],
+                base_value=values["base_value"],
+                modifiers=values["modifiers"],
+                source=values["source"],
+                assigned_by=values["assigned_by"],
+                hide_assigned_by=values["hide_assigned_by"],
             )
 
+        self._apply(AddChildRow(self.service, "add grade", build))
+
+    def _edit_grade(self, grade_id: int) -> None:
+        grade = self.service.session.get(SpecimenGrade, grade_id)
+        if grade is None:
+            return
+        dialog = GradeDialog(self.service, grade, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.validate():
+            return
+        scale = dialog.resolve_scale()
         try:
-            self._apply(AddChildRow(self.service, "add grade", build))
-        except Exception as exc:
+            self.service.update_grade(grade, scale=scale, **dialog.values())
+            self.service.session.commit()
+        except Exception as exc:  # noqa: BLE001 - reported, never fatal
             self.service.session.rollback()
-            QMessageBox.warning(self, "Grade", _readable(exc))
+            self.last_error = readable(exc)
+            self.failed.emit(self.last_error)
+        self.refresh()
+        self.changed.emit()
 
     def _add_certification(self) -> None:
         from .commands import AddChildRow
@@ -701,30 +723,36 @@ class DetailPanel(QDockWidget):
 
         specimen_id, company_id = specimen.id, company.id
         number = dialog.number.text().strip() or None
-        grade_id = dialog.grade.currentData()
+        awarded = dialog.awarded_for()
         graded_on = dialog.parsed_date()
-        primary = dialog.primary.isChecked()
+        url = dialog.url.text().strip() or None
 
         def build(service: CollectionService) -> object:
-            grade = service.session.get(SpecimenGrade, grade_id) if grade_id else None
-            return service.add_certification(
+            kind, identifier = awarded if awarded else (None, None)
+            grade = (
+                service.session.get(SpecimenGrade, identifier) if kind == "grade" else None
+            )
+            certification = service.add_certification(
                 service.session.get(Specimen, specimen_id),
                 service.session.get(GradingCompany, company_id),
                 cert_number=number,
                 grade=grade,
                 graded_on=graded_on,
-                is_primary=primary,
+                verification_url=url,
             )
+            # A sticker is its own certification — CAC's opinion of somebody else's grade — so
+            # picking one here ties that sticker to this certification.
+            if kind == "sticker":
+                link = service.session.get(SpecimenGradeModifier, identifier)
+                if link is not None:
+                    link.certification_id = certification.id
+                    service.session.flush()
+            return certification
 
-        try:
-            self._apply(AddChildRow(self.service, "add certification", build))
-        except Exception as exc:
-            self.service.session.rollback()
-            QMessageBox.warning(self, "Certification", _readable(exc))
-        else:
+        if self._apply(AddChildRow(self.service, "add certification", build)):
             for warning in self.service.warnings[-1:]:
                 if warning.code == "duplicate_cert_number":
-                    QMessageBox.information(self, "Certification", warning.message)
+                    self.failed.emit(warning.message)
 
     def _add_link(self) -> None:
         from .commands import AddChildRow
@@ -754,8 +782,6 @@ class DetailPanel(QDockWidget):
             )
 
         self._apply(AddChildRow(self.service, "add link", build))
-
-    # -- removing ---------------------------------------------------------
 
     def _remove(self, model: type, section: _Section, description: str) -> None:
         from .commands import DeleteChildRow
