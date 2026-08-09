@@ -190,6 +190,37 @@ def main(argv: list[str]) -> int:
     shot(app, columns, target / "07-columns.png", 640, 380)
     columns.close()
 
+    # The details panel, with the special systems populated.
+    window.subcollection_combo.setCurrentText("Modern")
+    app.processEvents()
+    service = window.service
+    scale = service.create_grade_scale("SHELDON", "Sheldon 1-70", kind="numeric")
+    service.add_grade_level(scale, "MS63", 63.0, numeric_value=63.0)
+    service.create_grade_modifier("CACG", "CAC green", "sticker", 0.15)
+    ngc = service.create_grading_company("NGC", "Numismatic Guaranty Company")
+    subcollection = window.current_subcollection()
+    first = next(iter(service.session.scalars(service.live_specimens(subcollection))))
+    service.add_grade(first, scale, "MS63", modifiers=["CACG"], source="tpg",
+                      assigned_by="NGC", is_primary=True)
+    service.add_certification(first, ngc, cert_number="2871554-013", is_primary=True)
+    service.add_link(first, "https://zeno.ru/showphoto.php?photo=12345", kind="zeno",
+                     label="Zeno record")
+    for kind in ("catalogues", "grades", "certifications", "links"):
+        service.show_special_block(window.current_subcollection(), kind, show_in_table=True,
+                                   sort_order=20)
+    window.session.commit()
+    window.model.refresh()
+    window.view.selectRow(0)
+    app.processEvents()
+    shot(app, window, target / "09-details-panel.png", 1250, 420)
+
+    # A sold coin, kept but italicised.
+    window._set_status("sold")
+    window.disposed_action.setChecked(True)
+    app.processEvents()
+    shot(app, window, target / "10-sold.png", 1250, 300)
+    window.undo.undo()
+
     new_field = NewFieldDialog(window.service, window)
     new_field.label_edit.setText("Fineness")
     new_field.type_combo.setCurrentText("Fineness")

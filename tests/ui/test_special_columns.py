@@ -86,7 +86,7 @@ def test_empty_special_columns_render_as_blank(qapp, svc, modern, undo):
     svc.add_specimen(modern)
 
     model = _model(svc, modern, undo)
-    for section in range(3, model.columnCount()):
+    for section in range(4, model.columnCount()):
         assert model.data(model.index(0, section), DISPLAY) == ""
 
 

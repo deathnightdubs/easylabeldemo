@@ -339,17 +339,59 @@ class CollectionService:
             select(Specimen).where(Specimen.inventory_code == code)
         )
 
-    def set_inventory_code(self, specimen: Specimen, code: str | None) -> None:
-        """Set a specimen's identifier, refusing a duplicate with a clear reason."""
+    def set_inventory_code(
+        self, specimen: Specimen, code: str | None, *, reuse_from_trash: bool = False
+    ) -> Specimen | None:
+        """Set a specimen's identifier.
+
+        A code held by a coin still in use is refused. A code held by a coin in the Trash may
+        be reused when ``reuse_from_trash`` is set: the deleted coin releases it and is given a
+        fresh one if it is ever restored. Returns the coin that released a code, if any, so the
+        caller can undo both halves.
+        """
         cleaned = (code or "").strip() or None
+        released: Specimen | None = None
         if cleaned is not None:
             owner = self.inventory_code_owner(cleaned)
             if owner is not None and owner.id != specimen.id:
-                raise NumisError(
-                    f"ID {cleaned!r} is already used by "
-                    f"{owner.display_name or 'another coin'}"
-                )
+                if owner.deleted_at is None:
+                    raise NumisError(
+                        f"ID {cleaned!r} is already used by "
+                        f"{owner.display_name or 'another coin'}"
+                    )
+                if not reuse_from_trash:
+                    raise NumisError(
+                        f"ID {cleaned!r} belongs to a coin in the Trash "
+                        f"({owner.display_name or 'unnamed'})"
+                    )
+                owner.inventory_code = None
+                released = owner
+                self.session.flush()
         specimen.inventory_code = cleaned
+        self.session.flush()
+        return released
+
+    def set_display_name(self, specimen: Specimen, name: str) -> None:
+        """Set a name by hand, or clear it to go back to the naming template."""
+        cleaned = name.strip()
+        specimen.display_name = cleaned
+        specimen.display_name_manual = 1 if cleaned else 0
+        if not cleaned:
+            self.refresh_display_name(specimen)
+        self.session.flush()
+
+    def set_status(self, specimen: Specimen, status: str) -> None:
+        """Set the current state of a coin.
+
+        Directly editable, and also derived whenever a ledger entry is added: recording a sale
+        sets it to ``sold``. Editing it by hand is for the case where you want to mark a coin
+        without recording a transaction.
+        """
+        if status not in C.SPECIMEN_STATUSES:
+            raise NumisError(
+                f"unknown status {status!r}; expected one of {', '.join(C.SPECIMEN_STATUSES)}"
+            )
+        specimen.status = status
         self.session.flush()
 
     def move_specimens(
@@ -396,6 +438,8 @@ class CollectionService:
         )
         self.session.add(specimen)
         self.session.flush()
+        if display_name:
+            specimen.display_name_manual = 1
         if values:
             self.set_values(specimen, values)
         if not display_name:
@@ -439,9 +483,20 @@ class CollectionService:
         specimen.deleted_at = utcnow()
         self.session.flush()
 
-    def restore(self, specimen: Specimen) -> None:
+    def restore(self, specimen: Specimen) -> str | None:
+        """Bring a coin back from the Trash.
+
+        If its identifier was reused while it was deleted it is given a fresh one, and that new
+        code is returned so the interface can say so. Refusing to restore would be worse: the
+        coin's data matters more than its number.
+        """
         specimen.deleted_at = None
+        reassigned: str | None = None
+        if specimen.inventory_code is None:
+            reassigned = self.next_inventory_code()
+            specimen.inventory_code = reassigned
         self.session.flush()
+        return reassigned
 
     def purge(self, specimen: Specimen) -> None:
         """Permanently delete, cascading to values, references, grades, links and events."""
@@ -449,12 +504,23 @@ class CollectionService:
         self.session.flush()
 
     def live_specimens(
-        self, subcollection: Subcollection | None = None, *, include_deleted: bool = False
+        self,
+        subcollection: Subcollection | None = None,
+        *,
+        include_deleted: bool = False,
+        include_disposed: bool = True,
     ) -> Select[tuple[Specimen]]:
-        """Specimens, excluding the Trash unless asked otherwise."""
+        """Specimens, excluding the Trash unless asked otherwise.
+
+        ``include_disposed`` covers coins that have left the collection — sold, traded, given
+        away, lost or stolen. They remain in the database with their full history; this only
+        decides whether they are listed.
+        """
         query = select(Specimen)
         if not include_deleted:
             query = query.where(Specimen.deleted_at.is_(None))
+        if not include_disposed:
+            query = query.where(Specimen.status.notin_(C.DISPOSED_STATUSES))
         if subcollection is not None:
             query = query.where(Specimen.subcollection_id == subcollection.id)
         return query
@@ -467,6 +533,8 @@ class CollectionService:
         The template refers to field keys, e.g. ``{country} {denomination} {date}``. A missing
         field renders as empty rather than raising, so a half-entered coin still has a name.
         """
+        if specimen.display_name_manual:
+            return specimen.display_name
         subcollection = subcollection or self.session.get(Subcollection, specimen.subcollection_id)
         template = (subcollection.naming_template if subcollection else "") or ""
         if not template:
@@ -717,6 +785,7 @@ class CollectionService:
         subcollection: Subcollection | None = None,
         descending: bool = False,
         include_deleted: bool = False,
+        include_disposed: bool = True,
     ) -> list[Specimen]:
         """Specimens ordered by one field, with missing values last.
 
@@ -744,7 +813,11 @@ class CollectionService:
         # For text fields with numeric ordering enabled, fall back to the text itself when
         # no sort value has been decided, so the column is never randomly ordered.
         query = (
-            self.live_specimens(subcollection, include_deleted=include_deleted)
+            self.live_specimens(
+                subcollection,
+                include_deleted=include_deleted,
+                include_disposed=include_disposed,
+            )
             .outerjoin(
                 model,
                 (model.specimen_id == Specimen.id)
@@ -884,6 +957,7 @@ class CollectionService:
         subcollection: Subcollection | None = None,
         descending: bool = False,
         include_deleted: bool = False,
+        include_disposed: bool = True,
     ) -> list[Specimen]:
         """Specimens ordered by one catalogue's numbers.
 

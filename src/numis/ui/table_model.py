@@ -15,20 +15,21 @@ Two invariants keep the grid honest, both learned from bugs:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QUndoStack
 
+from ..constants import DISPOSED_STATUSES, SPECIMEN_STATUSES
 from ..errors import NumisError
 from ..models import FieldDefinition, Specimen, Subcollection
 from ..services import CollectionService, Column
-from .commands import SetDisplayName, SetInventoryCode, SetValues, validate
+from .commands import SetDisplayName, SetInventoryCode, SetStatus, SetValues, validate
 
-#: The identity columns, shown before the user's own fields. All three are editable.
-ID_COLUMN, NAME_COLUMN, SUBCOLLECTION_COLUMN = 0, 1, 2
-FIXED_COLUMNS = ("ID", "Name", "Subcollection")
-FIXED_KEYS = ("__id__", "__name__", "__subcollection__")
+#: The identity columns, shown before the user's own fields. All are editable.
+ID_COLUMN, NAME_COLUMN, SUBCOLLECTION_COLUMN, STATUS_COLUMN = 0, 1, 2, 3
+FIXED_COLUMNS = ("ID", "Name", "Subcollection", "Status")
+FIXED_KEYS = ("__id__", "__name__", "__subcollection__", "__status__")
 
 #: Cells whose sort position was guessed are tinted, rather than interrupting entry with a
 #: dialog. The queue in the status bar is how the user finds them later.
@@ -55,6 +56,7 @@ class SpecimenTableModel(QAbstractTableModel):
         self.undo = undo_stack
         self.subcollection: Subcollection | None = None
         self.show_trash = False
+        self.show_disposed = False
         self.search_term = ""
         self._specimens: list[Specimen] = []
         self._columns: list[Column] = []
@@ -63,6 +65,8 @@ class SpecimenTableModel(QAbstractTableModel):
         self._flagged: set[tuple[int, int]] = set()
         self._sort_key: str | None = None
         self._sort_order = Qt.SortOrder.AscendingOrder
+        #: Set by the window: asked before an identifier held by a deleted coin is reused.
+        self.confirm_reuse: Callable[[str, Specimen], bool] | None = None
 
     # -- loading ----------------------------------------------------------
 
@@ -82,6 +86,11 @@ class SpecimenTableModel(QAbstractTableModel):
 
     def set_show_trash(self, show: bool) -> None:
         self.show_trash = show
+        self.refresh()
+
+    def set_show_disposed(self, show: bool) -> None:
+        """Whether coins that have left the collection are listed."""
+        self.show_disposed = show
         self.refresh()
 
     def refresh(self) -> None:
@@ -120,7 +129,12 @@ class SpecimenTableModel(QAbstractTableModel):
     def _load_specimens(self, columns: Sequence[Column]) -> list[Specimen]:
         if self.search_term:
             found = self.service.search(self.search_term, subcollection=self.subcollection)
-            return [s for s in found if self.show_trash or s.deleted_at is None]
+            return [
+                s
+                for s in found
+                if (self.show_trash or s.deleted_at is None)
+                and (self.show_disposed or s.status not in DISPOSED_STATUSES)
+            ]
 
         descending = self._sort_order == Qt.SortOrder.DescendingOrder
 
@@ -133,12 +147,15 @@ class SpecimenTableModel(QAbstractTableModel):
                         subcollection=self.subcollection,
                         descending=descending,
                         include_deleted=self.show_trash,
+                        include_disposed=self.show_disposed,
                     )
                 except NumisError as exc:  # a field type that cannot be sorted
                     self.error.emit(str(exc))
 
         query = self.service.live_specimens(
-            self.subcollection, include_deleted=self.show_trash
+            self.subcollection,
+            include_deleted=self.show_trash,
+            include_disposed=self.show_disposed,
         ).order_by(Specimen.id)
         specimens = list(self.service.session.scalars(query))
 
@@ -148,6 +165,8 @@ class SpecimenTableModel(QAbstractTableModel):
             specimens.sort(key=lambda s: (s.display_name or "").lower(), reverse=descending)
         elif self._sort_key == "__subcollection__":
             specimens.sort(key=lambda s: self._subcollection_name(s).lower(), reverse=descending)
+        elif self._sort_key == "__status__":
+            specimens.sort(key=lambda s: s.status, reverse=descending)
         return specimens
 
     def _subcollection_name(self, specimen: Specimen) -> str:
@@ -177,6 +196,9 @@ class SpecimenTableModel(QAbstractTableModel):
                 NAME_COLUMN: "Rendered from the subcollection's naming template, "
                 "or type your own.",
                 SUBCOLLECTION_COLUMN: "Type another subcollection's name to move the coin.",
+                STATUS_COLUMN: "owned, sold, traded, gifted, lost, stolen, ordered, "
+                "on_loan, returned or wanted. Sold coins are hidden unless "
+                "View > Show sold and disposed is on.",
             }[section]
         return None
 
@@ -212,13 +234,22 @@ class SpecimenTableModel(QAbstractTableModel):
         ):
             return QBrush(REVIEW_BACKGROUND)
 
-        if role == Qt.ItemDataRole.ForegroundRole and specimen.deleted_at is not None:
+        if role == Qt.ItemDataRole.ForegroundRole and (
+            specimen.deleted_at is not None or specimen.status in DISPOSED_STATUSES
+        ):
             return QBrush(DELETED_FOREGROUND)
 
-        if role == Qt.ItemDataRole.FontRole and specimen.deleted_at is not None:
-            font = QFont()
-            font.setStrikeOut(True)
-            return font
+        if role == Qt.ItemDataRole.FontRole:
+            if specimen.deleted_at is not None:
+                font = QFont()
+                font.setStrikeOut(True)
+                return font
+            if specimen.status in DISPOSED_STATUSES:
+                # Italic, not struck through: the coin was yours and its history stands; it
+                # simply is not in the collection any more.
+                font = QFont()
+                font.setItalic(True)
+                return font
 
         if role == Qt.ItemDataRole.ToolTipRole:
             cell = (specimen.id, getattr(column, "field_id", None))
@@ -229,6 +260,11 @@ class SpecimenTableModel(QAbstractTableModel):
                 )
             if column is None and specimen.deleted_at is not None:
                 return "In the Trash. Nothing is deleted permanently until you ask."
+            if column is None and specimen.status in DISPOSED_STATUSES:
+                return (
+                    f"Marked as {specimen.status}. Still in your collection's history, "
+                    "and shown because 'Show sold and disposed' is on."
+                )
         return None
 
     def _fixed_value(self, specimen: Specimen, section: int) -> str:
@@ -236,6 +272,8 @@ class SpecimenTableModel(QAbstractTableModel):
             return specimen.inventory_code or ""
         if section == NAME_COLUMN:
             return specimen.display_name or ""
+        if section == STATUS_COLUMN:
+            return specimen.status
         return self._subcollection_name(specimen)
 
     def _special_cell(self, specimen: Specimen, kind: str) -> str:
@@ -292,17 +330,35 @@ class SpecimenTableModel(QAbstractTableModel):
             if raw == (specimen.inventory_code or ""):
                 return False
             owner = self.service.inventory_code_owner(raw) if raw else None
+            reuse = False
             if owner is not None and owner.id != specimen.id:
-                self.error.emit(
-                    f"ID {raw!r} is already used by {owner.display_name or 'another coin'}"
-                )
-                return False
-            self.undo.push(SetInventoryCode(self.service, specimen.id, raw or None))
+                if owner.deleted_at is None:
+                    self.error.emit(
+                        f"ID {raw!r} is already used by {owner.display_name or 'another coin'}"
+                    )
+                    return False
+                # The holder is in the Trash, so reuse is allowed once confirmed.
+                if self.confirm_reuse is None or not self.confirm_reuse(raw, owner):
+                    return False
+                reuse = True
+            self.undo.push(
+                SetInventoryCode(self.service, specimen.id, raw or None, reuse_from_trash=reuse)
+            )
 
         elif section == NAME_COLUMN:
             if raw == (specimen.display_name or ""):
                 return False
             self.undo.push(SetDisplayName(self.service, specimen.id, raw))
+
+        elif section == STATUS_COLUMN:
+            if raw == specimen.status:
+                return False
+            if raw not in SPECIMEN_STATUSES:
+                self.error.emit(
+                    f"{raw!r} is not a status. Use one of: {', '.join(SPECIMEN_STATUSES)}"
+                )
+                return False
+            self.undo.push(SetStatus(self.service, [specimen.id], raw))
 
         else:
             target = self.service.subcollection_by_name(raw)
@@ -345,6 +401,13 @@ class SpecimenTableModel(QAbstractTableModel):
 
     def specimen_at(self, row: int) -> Specimen:
         return self._specimens[row]
+
+    def row_of(self, specimen_id: int) -> int | None:
+        """Where a coin currently sits, so a selection can survive a refresh."""
+        for row, specimen in enumerate(self._specimens):
+            if specimen.id == specimen_id:
+                return row
+        return None
 
     def field_at(self, section: int) -> FieldDefinition | None:
         column = self.column_at(section)
