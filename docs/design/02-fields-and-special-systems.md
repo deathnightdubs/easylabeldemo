@@ -197,19 +197,28 @@ A range such as *10 through 54.2* is an indexed `BETWEEN` on `sort_segments`.
 `catalog.letter_prefix_order` chooses whether `A54` precedes or follows `54`, per catalogue, because
 catalogues disagree with each other.
 
-**Display, both ways you asked for.** Table columns are descriptors in `saved_view.columns_json`:
+**Display, both ways you asked for.** As built, one catalogue column carries display settings in
+`subcollection_block.config_json` rather than there being two kinds of descriptor:
 
-| Descriptor | Shows | Sorts by |
+| Setting | Shows | Sorts by |
 |---|---|---|
-| `catalogue:<id>` | only that catalogue's numbers — a dedicated *KM* column, a dedicated *Hartill* column | that catalogue's `sort_segments` |
-| `catalogues:all` | every reference in one cell, e.g. `KM 2.1 · H 22.123 · N# 12345` | a chosen catalogue, set per column |
+| `mode: only`, `only: "H"` | only that catalogue's numbers — a dedicated *Hartill* column | that catalogue's `sort_segments` |
+| `mode: all` | every reference in one cell, e.g. `KM 2.1 · H 22.123 · N# 12345` | the first-ranked reference's segments |
+| `mode: rank` | just the one ranked first, second, … | the same |
 
-The second is the important one: **a combined column is still sortable and filterable by one
-catalogue.** The column carries a `sort_by_catalog` setting, and the query orders by that catalogue's
-segments while displaying everything. Filters available on either form: *has a reference in
-catalogue X*, *number in range in catalogue X*, *has no reference in catalogue X*, *number matches*.
+The narrowed form is the important one: **a column about one catalogue sorts and filters by that
+catalogue**, and can drop the repeated code with `show_catalogue: false`, so a *Hartill* column
+reads `1.01` rather than `H 1.01` four hundred times. Filters available on either form: *is in
+catalogue X*, *is not in catalogue X*, *number is*, *number contains*, *number between*, *has no
+catalogue number at all*.
 
-`is_primary` marks one reference per coin as the headline one, for compact displays and labels.
+See [03](03-search-sorting-filtering.md), Part 4 for the full set of column display settings, which
+work the same way for grades, certifications and links.
+
+`rank` orders the references by precedence: 1 is the headline one, used for compact displays and
+labels, with 2, 3 … behind it. It replaced an earlier `is_primary` flag, because "which is the
+second one you would cite" is a real question and a boolean cannot answer it. Ranks are not
+uniquely enforced, so every query orders by `(rank, id)` for a stable tie-break.
 
 ### 4.2 Grades
 
@@ -260,7 +269,7 @@ adjectival and Chinese scales at once. *"Exclude problem coins"* filters on modi
 | `grade:combined` | `MS63 Details (Cleaned)` in one cell |
 | `grade:scale:<id>` | only grades recorded on that scale |
 
-Multiple grades per coin are supported, with `is_primary` marking the one shown by default — so a
+Multiple grades per coin are supported, ordered by `rank`, with rank 1 shown by default — so a
 dealer's optimistic *AU* and your own *XF* can coexist and be compared.
 
 ### 4.3 Certifications
@@ -269,15 +278,20 @@ dealer's optimistic *AU* and your own *XF* can coexist and be compared.
 grades from slabs sort on the same axis as everything else.
 
 **Several certifications may be current at once.** Verified: a coin holds an NGC certification and a
-CAC endorsement simultaneously. `status = 'current'` is therefore not unique per coin; only
-`is_primary` is:
+CAC endorsement simultaneously. `status = 'current'` is therefore not unique per coin; `rank`
+decides which one a single-value column shows.
 
 ```
 Two concurrent certifications on one coin (TPG + endorsement): 2
-second primary: BLOCKED (correct)
 ```
 
 `cert_number` is nullable, because some endorsements do not issue one.
+
+**A sticker is a certification in its own right.** CAC does not grade the coin; it endorses somebody
+else's grade. So a certification records what it is *about* through one choice covering both the
+coin's grades and the sticker instances on them: choosing a grade sets `specimen_grade_id`, and
+choosing a sticker instead sets `specimen_grade_modifier.certification_id`, leaving
+`specimen_grade_id` empty because that company awarded no grade.
 
 **Certification history is first-class**, which matters in a field where cracking out is routine.
 `status` covers `current`, `pending`, `cracked_out`, `crossed_over`, `regraded` and `superseded`, and
@@ -370,7 +384,7 @@ evaluated by the whitelisted parser of 1.3.
 |---|---|---|
 | Starter packs | None. Test builds are a completely blank slate | 4 |
 | `Details` grades | Sort **just below** their base grade | 4.2, modifier delta −0.4 |
-| Multiple grades | The primary is **chosen by the user**; never inferred from recency or source | 4.2, `is_primary` |
+| Multiple grades | The headline one is **chosen by the user**; never inferred from recency or source | 4.2, `rank` |
 | Combined catalogue column | Coins with no reference in the sorted catalogue go **to the bottom** | 4.1 |
 | Remembered entries | Dropped. Plain `text` fields, filtered as text | 1.2 |
 | Fixed lists (`category`) | Also dropped. Everything is plain text for now; to be revisited | 1.2 |

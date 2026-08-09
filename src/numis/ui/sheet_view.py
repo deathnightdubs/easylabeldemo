@@ -26,6 +26,8 @@ class SheetView(QTableView):
     """A table that behaves the way a spreadsheet user expects."""
 
     sort_value_requested = Signal(QModelIndex)
+    #: A special-system column header was asked to change what it shows. Carries the section.
+    column_settings_requested = Signal(int)
     status = Signal(str)
 
     def __init__(self, parent: object | None = None) -> None:
@@ -38,12 +40,18 @@ class SheetView(QTableView):
             | QAbstractItemView.EditTrigger.AnyKeyPressed
         )
         self.setAlternatingRowColors(True)
-        self.setSortingEnabled(True)
+        # Sorting is handled here rather than by Qt's own click handling, because Qt gives the
+        # model no way to know whether Ctrl was held — and that is the difference between
+        # "sort by this" and "then by this".
+        self.setSortingEnabled(False)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
         header = self.horizontalHeader()
         header.setSectionsMovable(True)
+        header.setSortIndicatorShown(True)
+        header.setSectionsClickable(True)
+        header.sectionClicked.connect(self._header_clicked)
         # Interactive sizing on purpose: automatic resize-to-contents is the usual cause of
         # sluggish scrolling on large tables, because it measures every row.
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
@@ -72,6 +80,46 @@ class SheetView(QTableView):
     def clear_sort_indicator(self) -> None:
         """Stop claiming a sort that no longer applies to the columns on screen."""
         self.horizontalHeader().setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
+
+    def _header_clicked(self, section: int) -> None:
+        """Sort by a column; Ctrl-click adds it behind the keys already chosen."""
+        model = self.sheet_model()
+        if model is None:
+            return
+        target = model.target_at(section)
+        if target is None:
+            return
+
+        existing = {key.target: key for key in model.sort_keys}
+        previous = existing.get(target)
+        order = (
+            Qt.SortOrder.DescendingOrder
+            if previous is not None and not previous.descending
+            else Qt.SortOrder.AscendingOrder
+        )
+        additional = bool(
+            QGuiApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier
+        )
+        model.sort(section, order, additional=additional)
+        self.refresh_sort_indicator()
+
+    def refresh_sort_indicator(self) -> None:
+        """Point the indicator at whichever column leads the sort."""
+        model = self.sheet_model()
+        if model is None:
+            return
+        keys = model.sort_keys
+        if not keys:
+            self.clear_sort_indicator()
+            return
+        section = model.section_of(keys[0].target)
+        if section is None:
+            self.clear_sort_indicator()
+            return
+        self.horizontalHeader().setSortIndicator(
+            section,
+            Qt.SortOrder.DescendingOrder if keys[0].descending else Qt.SortOrder.AscendingOrder,
+        )
 
     def _fit_columns(self) -> None:
         """Size columns to their contents, but only for tables small enough for it to be
@@ -217,13 +265,23 @@ class SheetView(QTableView):
         menu.addAction(self.clear_action)
         menu.exec(self.viewport().mapToGlobal(position))
 
-    def _show_header_menu(self, position: object) -> None:
-        header = self.horizontalHeader()
-        section = header.logicalIndexAt(position)
+    def header_menu(self, section: int) -> QMenu:
+        """What right-clicking a column header offers.
+
+        Built separately from showing it so that the contents can be examined without opening a
+        modal, which a headless test cannot dismiss.
+        """
         menu = QMenu(self)
         model = self.sheet_model()
 
         if section >= 0:
+            column = model.column_at(section)
+            if column is not None and column.kind != "field":
+                settings = menu.addAction("Column settings…")
+                settings.triggered.connect(
+                    lambda: self.column_settings_requested.emit(section)
+                )
+                menu.addSeparator()
             hide = menu.addAction(f"Hide “{model.headerData(section, Qt.Orientation.Horizontal)}”")
             hide.triggered.connect(lambda: self.setColumnHidden(section, True))
         if any(self.isColumnHidden(index) for index in range(model.columnCount())):
@@ -232,7 +290,11 @@ class SheetView(QTableView):
         menu.addSeparator()
         resize = menu.addAction("Fit columns to contents")
         resize.triggered.connect(self.resizeColumnsToContents)
-        menu.exec(header.mapToGlobal(position))
+        return menu
+
+    def _show_header_menu(self, position: object) -> None:
+        header = self.horizontalHeader()
+        self.header_menu(header.logicalIndexAt(position)).exec(header.mapToGlobal(position))
 
     def _show_all_columns(self) -> None:
         for index in range(self.model().columnCount()):

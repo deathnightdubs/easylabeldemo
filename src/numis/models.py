@@ -569,7 +569,7 @@ class SpecimenGrade(UuidMixin, TimestampMixin, Base):
     """A grade recorded against a coin, from any source.
 
     A coin may hold several. Which one is the headline grade is chosen by the user via
-    ``is_primary``; it is never inferred from recency or from the source's authority.
+    ``rank``; it is never inferred from recency or from the source's authority.
     """
 
     __tablename__ = "specimen_grade"
@@ -647,7 +647,8 @@ class Certification(UuidMixin, TimestampMixin, Base):
     """A certification on a coin.
 
     Several may be ``current`` at once — a grading company's slab plus a separate
-    endorsement sticker — so 'current' is not unique. Only ``is_primary`` is.
+    endorsement sticker — so 'current' is not unique. ``rank`` decides which one a
+    single-value column shows.
     """
 
     __tablename__ = "certification"

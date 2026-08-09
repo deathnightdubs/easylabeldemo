@@ -18,10 +18,14 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
+from numis.columns import ColumnDisplay
 from numis.db import create_library
+from numis.filters import Criterion, FilterGroup, SortKey
 from numis.services import CollectionService
+from numis.ui.column_settings import ColumnSettingsDialog
 from numis.ui.commands import SetSortValue
 from numis.ui.fields_dialog import ManageFieldsDialog, NewFieldDialog
+from numis.ui.filter_dialog import FilterDialog
 from numis.ui.main_window import MASTER_VIEW, MainWindow
 
 MODERN = [
@@ -102,7 +106,7 @@ def build(path: Path) -> MainWindow:
     for specimen, row in zip(
         service.session.scalars(service.live_specimens(modern)), MODERN, strict=False
     ):
-        service.add_reference(specimen, krause, row[5], is_primary=True)
+        service.add_reference(specimen, krause, row[5], rank=1)
 
     service.reindex_all()
     window.session.commit()
@@ -200,9 +204,9 @@ def main(argv: list[str]) -> int:
     ngc = service.create_grading_company("NGC", "Numismatic Guaranty Company")
     subcollection = window.current_subcollection()
     first = next(iter(service.session.scalars(service.live_specimens(subcollection))))
-    service.add_grade(first, scale, "MS63", modifiers=["CACG"], source="tpg",
-                      assigned_by="NGC", is_primary=True)
-    service.add_certification(first, ngc, cert_number="2871554-013", is_primary=True)
+    service.add_grade(first, scale, "MS63", base_value=63.0, modifiers=[("CACG", "Green")],
+                      source="tpg", assigned_by="NGC", rank=1)
+    service.add_certification(first, ngc, cert_number="2871554-013", rank=1)
     service.add_link(first, "https://zeno.ru/showphoto.php?photo=12345", kind="zeno",
                      label="Zeno record")
     for kind in ("catalogues", "grades", "certifications", "links"):
@@ -227,6 +231,49 @@ def main(argv: list[str]) -> int:
     app.processEvents()
     shot(app, new_field, target / "08-new-column.png", 460, 220)
     new_field.close()
+
+    # Per-column display settings: what a grade column shows of each grade.
+    settings = ColumnSettingsDialog(
+        service, window.current_subcollection(), "grades", ColumnDisplay(), window
+    )
+    settings.modifier_details.setChecked(True)
+    settings.show_assigned_by.setChecked(True)
+    app.processEvents()
+    shot(app, settings, target / "11-column-settings.png", 560, 460)
+    settings.close()
+
+    # Building a filter, with a nested group for a question a flat list cannot ask.
+    window.subcollection_combo.setCurrentText("Modern")
+    app.processEvents()
+    current = FilterGroup.of(Criterion("field:weight", "gte", ("20",)))
+    filters = FilterDialog(
+        service, window.current_subcollection(), window.model.column_labels(), current, window
+    )
+    filters.group_box.setChecked(True)
+    for row, ruler in enumerate(("Victoria", "Maria Theresia")):
+        if row >= filters.subgroup.table.rowCount():
+            filters.subgroup.add_row()
+        table = filters.subgroup.table
+        column, operator = table.cellWidget(row, 0), table.cellWidget(row, 1)
+        column.setCurrentIndex(column.findData("field:ruler"))
+        operator.setCurrentIndex(operator.findData("is"))
+        table.cellWidget(row, 2).setText(ruler)
+    filters._update()
+    app.processEvents()
+    shot(app, filters, target / "12-filter.png", 720, 560)
+
+    # The result in the grid, sorted by two columns.
+    window.model.set_filters(filters.group())
+    window.model.set_sort_keys(
+        [SortKey("field:ruler"), SortKey("field:date_issued", descending=True)]
+    )
+    window.view.refresh_sort_indicator()
+    window._show_filter_state()
+    filters.close()
+    app.processEvents()
+    shot(app, window, target / "13-filtered.png", 1250, 300)
+    window.model.set_filters(None)
+    window.model.set_sort_keys([])
 
     del view
     window.session.commit()

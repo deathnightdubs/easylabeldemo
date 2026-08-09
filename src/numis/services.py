@@ -12,13 +12,16 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from sqlalchemy import Select, delete, func, select, text
+from sqlalchemy import Select, delete, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from . import catalogs, grading, search
 from . import constants as C
+from .columns import DEFAULT_DISPLAY, ColumnDisplay, pick
 from .errors import BindingNotSet, ConversionError, FieldParseError, NumisError, Warning_
 from .fields import format_value, get_field_type, parse_value
+from .filter_sql import compile_filter, order_by_clauses
+from .filters import FilterError, FilterGroup, SortKey, sort_from_json, sort_to_json
 from .models import (
     VALUE_MODELS,
     Catalog,
@@ -58,6 +61,8 @@ class Column:
     kind: str = "field"
     field_id: int | None = None
     data_type: str | None = None
+    #: For a special system, how much of it this column shows. Unused for ordinary fields.
+    display: ColumnDisplay = DEFAULT_DISPLAY
 
 
 def _slugify(name: str) -> str:
@@ -150,6 +155,32 @@ class CollectionService:
             config.setdefault("decimals", self.currency_decimals)
             config.setdefault("symbol", self.meta.currency_symbol)
         return config
+
+    # -- special-system column settings -----------------------------------
+
+    def block_for(
+        self, subcollection: Subcollection, block_kind: str
+    ) -> SubcollectionBlock | None:
+        """The block placing a special system in a subcollection, if it is placed at all."""
+        return self.session.scalars(
+            select(SubcollectionBlock).where(
+                SubcollectionBlock.subcollection_id == subcollection.id,
+                SubcollectionBlock.block_kind == block_kind,
+                SubcollectionBlock.field_definition_id.is_(None),
+            )
+        ).first()
+
+    def block_display(self, block: SubcollectionBlock) -> ColumnDisplay:
+        """How this column shows itself. Defaults when nothing has been chosen."""
+        return ColumnDisplay.from_json(block.config_json)
+
+    def set_block_display(
+        self, block: SubcollectionBlock, display: ColumnDisplay
+    ) -> SubcollectionBlock:
+        """Record how a column shows itself. Presentation only — no coin data changes."""
+        block.config_json = display.to_json()
+        self.session.flush()
+        return block
 
     def show_field(
         self,
@@ -280,6 +311,7 @@ class CollectionService:
                         key=block.block_kind,
                         label=block.display_label or block.block_kind.title(),
                         kind=block.block_kind,
+                        display=self.block_display(block),
                     )
                 )
         return columns
@@ -309,7 +341,20 @@ class CollectionService:
                     )
                     merged.setdefault(column.key, canonical)
                 else:
-                    merged.setdefault(column.key, column)
+                    # Two subcollections can show the same special system differently, and in
+                    # the master view neither one's settings are more correct than the other's.
+                    # Rather than let whichever loaded first decide, disagreement falls back to
+                    # the plain defaults, which is at least explicable when the user sees it.
+                    existing = merged.get(column.key)
+                    if existing is None:
+                        merged[column.key] = column
+                    elif existing.display != column.display:
+                        merged[column.key] = Column(
+                            key=existing.key,
+                            label=existing.label,
+                            kind=existing.kind,
+                            display=DEFAULT_DISPLAY,
+                        )
         return list(merged.values())
 
     # -- specimens --------------------------------------------------------
@@ -369,6 +414,9 @@ class CollectionService:
                 self.session.flush()
         specimen.inventory_code = cleaned
         self.session.flush()
+        self.reindex(specimen)
+        if released is not None:
+            self.reindex(released)
         return released
 
     def set_display_name(self, specimen: Specimen, name: str) -> None:
@@ -379,6 +427,7 @@ class CollectionService:
         if not cleaned:
             self.refresh_display_name(specimen)
         self.session.flush()
+        self.reindex(specimen)
 
     def set_status(self, specimen: Specimen, status: str) -> None:
         """Set the current state of a coin.
@@ -444,6 +493,7 @@ class CollectionService:
             self.set_values(specimen, values)
         if not display_name:
             self.refresh_display_name(specimen, subcollection)
+        self.reindex(specimen)
         return specimen
 
     def bulk_add(
@@ -585,6 +635,7 @@ class CollectionService:
         for name, value in columns.items():
             setattr(existing, name, value)
         self.session.flush()
+        self.reindex(specimen)
         return existing
 
     def set_values(self, specimen: Specimen, values: dict[str, Any]) -> None:
@@ -672,6 +723,7 @@ class CollectionService:
         for name, value in columns.items():
             setattr(existing, name, value)
         self.session.flush()
+        self.reindex(specimen)
 
     def value_grid(
         self, specimens: Sequence[Specimen], fields: Sequence[FieldDefinition]
@@ -840,6 +892,83 @@ class CollectionService:
             raise NumisError(f"no field with key {field!r}")
         return resolved
 
+    # -- the one query the grid asks -------------------------------------
+
+    def query_specimens(
+        self,
+        subcollection: Subcollection | None = None,
+        *,
+        filters: FilterGroup | None = None,
+        sort: Sequence[SortKey] = (),
+        term: str = "",
+        include_deleted: bool = False,
+        include_disposed: bool = True,
+        catalogues: dict[str, str] | None = None,
+    ) -> list[Specimen]:
+        """Specimens matching a filter and a search term, in a chosen order.
+
+        One method rather than three because filtering, searching and sorting are not
+        alternatives: a collector wants "Qianlong cash, graded, sorted by weight" all at once.
+        Search used to replace the sort silently, so an active sort was simply ignored while
+        looking something up.
+
+        ``catalogues`` names, per sort target, which catalogue to order a catalogue column by, so
+        a column showing only Hartill sorts by Hartill numbers rather than by whichever
+        reference happens to rank first.
+        """
+        query = self.live_specimens(
+            subcollection,
+            include_deleted=include_deleted,
+            include_disposed=include_disposed,
+        )
+
+        if term.strip():
+            matches = self._search_ids(term)
+            if not matches:
+                return []
+            query = query.where(Specimen.id.in_(matches))
+
+        try:
+            condition = compile_filter(filters, self.session)
+        except FilterError as exc:
+            raise NumisError(str(exc)) from exc
+        if condition is not None:
+            query = query.where(condition)
+
+        try:
+            query = query.order_by(*order_by_clauses(sort, self.session, catalogues=catalogues))
+        except FilterError as exc:
+            raise NumisError(str(exc)) from exc
+
+        return list(self.session.scalars(query))
+
+    def count_specimens(
+        self,
+        subcollection: Subcollection | None = None,
+        *,
+        filters: FilterGroup | None = None,
+        include_deleted: bool = False,
+        include_disposed: bool = True,
+    ) -> int:
+        """How many coins match, without loading them."""
+        query = self.live_specimens(
+            subcollection,
+            include_deleted=include_deleted,
+            include_disposed=include_disposed,
+        )
+        try:
+            condition = compile_filter(filters, self.session)
+        except FilterError as exc:
+            raise NumisError(str(exc)) from exc
+        if condition is not None:
+            query = query.where(condition)
+        return int(
+            self.session.scalar(
+                select(func.count()).select_from(query.subquery())
+            )
+            or 0
+        )
+
     def convert_field_type(
         self, field: FieldDefinition, new_type: str, *, new_key: str | None = None
     ) -> tuple[FieldDefinition, list[Warning_]]:
@@ -919,6 +1048,9 @@ class CollectionService:
         )
         self.session.add(reference)
         self.session.flush()
+        # Catalogue numbers are indexed, so a new one has to reach the index or searching for it
+        # finds nothing until the next full rebuild.
+        self.reindex(specimen)
         return reference
 
     def references_for(
@@ -929,6 +1061,102 @@ class CollectionService:
             query = query.where(CatalogReference.catalog_id == catalog.id)
         return list(
             self.session.scalars(query.order_by(CatalogReference.rank, CatalogReference.id))
+        )
+
+    # -- rendering a special-system column --------------------------------
+
+    def special_cell(
+        self, specimen: Specimen, kind: str, display: ColumnDisplay | None = None
+    ) -> str:
+        """What a special-system column shows for one coin.
+
+        Lives here rather than in the table model so that the rules are testable without a GUI,
+        and so an export or a label template renders a column exactly as the grid does.
+        """
+        display = display or DEFAULT_DISPLAY
+        if kind == "catalogues":
+            return self._catalogue_cell(specimen, display)
+        if kind == "grades":
+            return self._grade_cell(specimen, display)
+        if kind == "certifications":
+            return self._certification_cell(specimen, display)
+        if kind == "links":
+            return self._link_cell(specimen, display)
+        return ""
+
+    def _catalogue_cell(self, specimen: Specimen, display: ColumnDisplay) -> str:
+        references = self.references_for(specimen)
+        if display.mode == "only" and display.only:
+            wanted = display.only.casefold()
+            references = [
+                reference
+                for reference in references
+                if (catalog := self.session.get(Catalog, reference.catalog_id)) is not None
+                and catalog.code.casefold() == wanted
+            ]
+        parts = []
+        for reference in pick(references, display):
+            catalog = self.session.get(Catalog, reference.catalog_id)
+            if catalog is not None and display.show_catalogue:
+                parts.append(f"{catalog.code} {reference.number_raw}")
+            else:
+                parts.append(reference.number_raw)
+        return display.separator.join(part for part in parts if part)
+
+    def _grade_cell(self, specimen: Specimen, display: ColumnDisplay) -> str:
+        grades = self.grades_for(specimen)
+        if display.mode == "only" and display.only:
+            # A grade has no company of its own — an opinion belongs to whoever gave it, which
+            # may be a company, a dealer or the collector. So one filter matches either the
+            # source ('tpg', 'seller') or the name recorded against it ('NGC', 'Bob Reis').
+            wanted = display.only.casefold()
+            grades = [
+                grade
+                for grade in grades
+                if wanted in ((grade.source or "").casefold(), (grade.assigned_by or "").casefold())
+            ]
+        rendered = [grading.render(grade, display.grade_display) for grade in pick(grades, display)]
+        return display.separator.join(part for part in rendered if part)
+
+    def _certification_cell(self, specimen: Specimen, display: ColumnDisplay) -> str:
+        certifications = self.current_certifications(specimen)
+        if display.mode == "only" and display.only:
+            wanted = display.only.casefold()
+            certifications = [
+                certification
+                for certification in certifications
+                if certification.company is not None
+                and certification.company.code.casefold() == wanted
+            ]
+        parts = []
+        for certification in pick(certifications, display):
+            company = certification.company
+            code = company.code if company else ""
+            parts.append(f"{code} {certification.cert_number or ''}".strip())
+        return display.separator.join(part for part in parts if part)
+
+    def _link_cell(self, specimen: Specimen, display: ColumnDisplay) -> str:
+        links = self.links_for(specimen)
+        if display.mode == "only" and display.only:
+            wanted = display.only.casefold()
+            links = [link for link in links if (link.kind or "").casefold() == wanted]
+        chosen = pick(links, display)
+        if not chosen:
+            return ""
+        if display.show_labels:
+            return display.separator.join(link.label or link.url for link in chosen)
+        # A bare count by default: a URL is unreadable at column width, and what the collector
+        # wants at a glance is whether there is anything to follow.
+        return str(len(chosen))
+
+    def links_for(self, specimen: Specimen) -> list[ExternalLink]:
+        """A coin's links in the user's order of precedence."""
+        return list(
+            self.session.scalars(
+                select(ExternalLink)
+                .where(ExternalLink.specimen_id == specimen.id)
+                .order_by(ExternalLink.rank, ExternalLink.sort_order, ExternalLink.id)
+            )
         )
 
     def combined_catalogue_cell(self, specimen: Specimen, separator: str = " · ") -> str:
@@ -1442,12 +1670,19 @@ class CollectionService:
         )
 
     def current_certifications(self, specimen: Specimen) -> list[Certification]:
+        """Every certification still standing, in the user's order of precedence.
+
+        Ordered explicitly: without it SQLite decided what a certifications column listed first,
+        and the answer could change between runs.
+        """
         return list(
             self.session.scalars(
-                select(Certification).where(
+                select(Certification)
+                .where(
                     Certification.specimen_id == specimen.id,
                     Certification.status == "current",
                 )
+                .order_by(Certification.rank, Certification.id)
             )
         )
 
@@ -1724,21 +1959,68 @@ class CollectionService:
         *,
         subcollection: Subcollection | None = None,
         columns: Sequence[str] = (),
-        sort: Sequence[dict[str, Any]] = (),
-        filters: dict[str, Any] | None = None,
+        sort: Sequence[SortKey] | Sequence[dict[str, Any]] = (),
+        filters: FilterGroup | dict[str, Any] | None = None,
         group_by: str | None = None,
     ) -> SavedView:
-        view = SavedView(
-            name=name,
-            subcollection_id=subcollection.id if subcollection else None,
-            columns_json=json.dumps(list(columns)),
-            sort_json=json.dumps(list(sort)),
-            filter_json=json.dumps(filters or {}),
-            group_by=group_by,
-        )
-        self.session.add(view)
+        """Remember a filter, a sort order and a set of columns under a name.
+
+        Saving the same name again replaces it, because that is what a person means by saving a
+        view they already have: the alternative is a list with four things called "Chinese".
+        """
+        cleaned = name.strip()
+        if not cleaned:
+            raise NumisError("a saved view needs a name")
+
+        if isinstance(filters, FilterGroup):
+            filter_json = filters.to_json()
+        else:
+            filter_json = json.dumps(filters or {})
+        if sort and isinstance(sort[0], SortKey):
+            sort_json = sort_to_json(sort)  # type: ignore[arg-type]
+        else:
+            sort_json = json.dumps(list(sort))
+
+        view = self.view_by_name(cleaned)
+        if view is None:
+            view = SavedView(name=cleaned)
+            self.session.add(view)
+        view.subcollection_id = subcollection.id if subcollection else None
+        view.columns_json = json.dumps(list(columns))
+        view.sort_json = sort_json
+        view.filter_json = filter_json
+        view.group_by = group_by
         self.session.flush()
         return view
+
+    def views(self, subcollection: Subcollection | None = None) -> list[SavedView]:
+        """Saved views, those belonging to a subcollection plus the ones that apply anywhere."""
+        query = select(SavedView).order_by(SavedView.sort_order, SavedView.name)
+        if subcollection is not None:
+            query = query.where(
+                or_(
+                    SavedView.subcollection_id == subcollection.id,
+                    SavedView.subcollection_id.is_(None),
+                )
+            )
+        return list(self.session.scalars(query))
+
+    def view_by_name(self, name: str) -> SavedView | None:
+        cleaned = name.strip().lower()
+        for view in self.session.scalars(select(SavedView)):
+            if view.name.strip().lower() == cleaned:
+                return view
+        return None
+
+    def view_filter(self, view: SavedView) -> FilterGroup:
+        return FilterGroup.from_json(view.filter_json)
+
+    def view_sort(self, view: SavedView) -> tuple[SortKey, ...]:
+        return sort_from_json(view.sort_json)
+
+    def delete_view(self, view: SavedView) -> None:
+        self.session.delete(view)
+        self.session.flush()
 
     # -- search -----------------------------------------------------------
 
@@ -1789,15 +2071,19 @@ class CollectionService:
             count += 1
         return count
 
-    def search(self, term: str, *, subcollection: Subcollection | None = None) -> list[Specimen]:
-        """Full-text search. CJK terms are routed to the segmented index automatically."""
+    def _search_ids(self, term: str) -> list[int]:
+        """The ids the full-text index matches, unfiltered and unordered."""
         query = search.build_query(term)
         if not query:
             return []
         rows = self.session.execute(
             text("SELECT rowid FROM specimen_fts WHERE specimen_fts MATCH :q"), {"q": query}
         )
-        ids = [row[0] for row in rows]
+        return [row[0] for row in rows]
+
+    def search(self, term: str, *, subcollection: Subcollection | None = None) -> list[Specimen]:
+        """Full-text search. CJK terms are routed to the segmented index automatically."""
+        ids = self._search_ids(term)
         if not ids:
             return []
         statement = self.live_specimens(subcollection).where(Specimen.id.in_(ids))

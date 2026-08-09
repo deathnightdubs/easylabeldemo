@@ -24,11 +24,14 @@ from sqlalchemy import select
 
 from ..constants import DISPOSED_STATUSES
 from ..db import Library, create_library, open_library
+from ..filters import FilterGroup
 from ..models import Subcollection
 from ..services import CollectionService
+from .column_settings import ColumnSettingsDialog
 from .commands import AddSpecimens, DeleteSpecimens, MoveSpecimens, SetSortValue, SetStatus
 from .detail_panel import DetailPanel, _readable
 from .fields_dialog import ManageFieldsDialog, NewFieldDialog
+from .filter_dialog import FilterDialog
 from .modifier_dialogs import ManageModifiersDialog
 from .sheet_view import SheetView
 from .table_model import SpecimenTableModel
@@ -56,6 +59,9 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.count_label)
         self.review_label = QLabel()
         self.statusBar().addPermanentWidget(self.review_label)
+        #: Says what the filter is hiding. A filtered grid otherwise looks like data loss.
+        self.filter_label = QLabel()
+        self.statusBar().addPermanentWidget(self.filter_label)
 
         self.subcollection_combo = QComboBox()
         self.subcollection_combo.setMinimumWidth(180)
@@ -78,6 +84,7 @@ class MainWindow(QMainWindow):
         self.view.setModel(self.model)
         self.model.sort_cleared.connect(self.view.clear_sort_indicator)
         self.view.sort_value_requested.connect(self._edit_sort_value)
+        self.view.column_settings_requested.connect(self._column_settings)
         self.view.status.connect(lambda text: self.statusBar().showMessage(text, 4000))
         self.setCentralWidget(self.view)
 
@@ -161,6 +168,14 @@ class MainWindow(QMainWindow):
         self.columns_action = QAction("Columns…", self)
         self.columns_action.triggered.connect(self._manage_columns)
         bar.addAction(self.columns_action)
+
+        self.filter_action = QAction("Filter…", self)
+        self.filter_action.setShortcut(QKeySequence("Ctrl+F"))
+        self.filter_action.setToolTip(
+            "Show only the coins that answer to a set of tests. Ctrl+F."
+        )
+        self.filter_action.triggered.connect(self._edit_filter)
+        bar.addAction(self.filter_action)
         bar.addSeparator()
 
         self.undo_action = self.undo.createUndoAction(self, "Undo")
@@ -179,8 +194,11 @@ class MainWindow(QMainWindow):
         self.model.set_search(self.search_box.text())
         term = self.search_box.text().strip()
         if term:
+            ordered = (
+                f", sorted by {self.model.sort_summary()}" if self.model.sort_keys else ""
+            )
             self.statusBar().showMessage(
-                f"{self.model.rowCount()} coin(s) matching “{term}”", 6000
+                f"{self.model.rowCount()} coin(s) matching “{term}”{ordered}", 6000
             )
 
     def _build_menus(self) -> None:
@@ -216,6 +234,17 @@ class MainWindow(QMainWindow):
             edit_menu.addAction(action)
 
         view_menu = self.menuBar().addMenu("&View")
+        view_menu.addAction(self.filter_action)
+        self.clear_filter_action = QAction("Clear the filter", self)
+        self.clear_filter_action.setShortcut(QKeySequence("Ctrl+Shift+F"))
+        self.clear_filter_action.triggered.connect(self._clear_filter)
+        view_menu.addAction(self.clear_filter_action)
+        self.sort_action = QAction("Clear the sort order", self)
+        self.sort_action.triggered.connect(self._clear_sort)
+        view_menu.addAction(self.sort_action)
+
+        self.views_menu = view_menu.addMenu("Saved views")
+        view_menu.addSeparator()
         self.disposed_action = QAction("Show sold and disposed", self)
         self.disposed_action.setCheckable(True)
         self.disposed_action.setToolTip(
@@ -280,6 +309,9 @@ class MainWindow(QMainWindow):
             action.setEnabled(enabled)
 
         self.model.set_subcollection(subcollection)
+        self._reload_views()
+        self._show_filter_state()
+        self.view.refresh_sort_indicator()
 
         if enabled:
             # Clear the master-view hint, so it cannot linger over a real subcollection.
@@ -471,6 +503,169 @@ class MainWindow(QMainWindow):
             return
         ManageFieldsDialog(self.service, subcollection, self).exec()
         self.model.refresh()
+
+    def _column_settings(self, section: int) -> None:
+        """Change what a catalogue, grade, certification or links column shows."""
+        column = self.model.column_at(section)
+        if column is None or column.kind == "field":
+            return
+        subcollection = self.current_subcollection()
+        if subcollection is None:
+            # Settings belong to the column in a subcollection, and the master view is a merge
+            # of several. Saying so is more use than silently editing whichever came first.
+            self.statusBar().showMessage(
+                "Column settings belong to a subcollection — open one of its tabs to change "
+                "what this column shows.",
+                8000,
+            )
+            return
+        block = self.service.block_for(subcollection, column.kind)
+        if block is None:  # pragma: no cover - the column came from a block
+            return
+
+        dialog = ColumnSettingsDialog(
+            self.service, subcollection, column.kind, column.display, self
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        chosen = dialog.display()
+
+        def apply() -> bool:
+            self.service.set_block_display(block, chosen)
+            self.session.commit()
+            self.model.refresh()
+            return True
+
+        if self.guard("saving column settings", apply):
+            self.statusBar().showMessage(
+                f"{column.label}: {chosen.describe(column.kind)}", 5000
+            )
+
+    # -- filtering, sorting and saved views -------------------------------
+
+    def _edit_filter(self) -> None:
+        dialog = FilterDialog(
+            self.service,
+            self.current_subcollection(),
+            self.model.column_labels(),
+            self.model.filters,
+            self,
+            include_deleted=self.model.show_trash,
+            include_disposed=self.model.show_disposed,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._apply_filter(dialog.group())
+
+    def _apply_filter(self, group: FilterGroup) -> None:
+        def apply() -> bool:
+            self.model.set_filters(group)
+            return True
+
+        if self.guard("filtering", apply) is None:
+            return
+        self._show_filter_state()
+
+    def _clear_filter(self) -> None:
+        if self.model.filters.is_empty():
+            self.statusBar().showMessage("Nothing is filtered out.", 4000)
+            return
+        self.model.set_filters(None)
+        self.search_box.clear()
+        self.statusBar().showMessage("Filter cleared.", 4000)
+        self._show_filter_state()
+
+    def _clear_sort(self) -> None:
+        self.model.set_sort_keys([])
+        self.view.clear_sort_indicator()
+        self.statusBar().showMessage("Back to the order they were added.", 4000)
+
+    def _show_filter_state(self) -> None:
+        """Say what is being hidden, because a filtered grid otherwise looks like data loss."""
+        group = self.model.filters
+        if group.is_empty():
+            self.filter_label.setText("")
+            self.filter_label.setStyleSheet("")
+            self.filter_action.setText("Filter…")
+            return
+        described = group.describe(self.model.column_labels())
+        self.filter_label.setText(f"  Filtered: {described}  ")
+        self.filter_label.setToolTip(f"{described}\n\nView ▸ Clear the filter, or Ctrl+Shift+F.")
+        self.filter_label.setStyleSheet("background: #e7f5ff; padding: 2px 6px;")
+        self.filter_action.setText(f"Filter ({group.count()})…")
+
+    def _reload_views(self) -> None:
+        """Rebuild the saved-views menu from the library."""
+        self.views_menu.clear()
+        save = QAction("Save this view…", self)
+        save.triggered.connect(self._save_view)
+        self.views_menu.addAction(save)
+
+        views = self.service.views(self.current_subcollection())
+        if views:
+            self.views_menu.addSeparator()
+        for view in views:
+            action = QAction(view.name, self)
+            action.triggered.connect(lambda _checked=False, v=view: self._apply_view(v))
+            self.views_menu.addAction(action)
+        if views:
+            self.views_menu.addSeparator()
+            remove = self.views_menu.addMenu("Delete a saved view")
+            for view in views:
+                action = QAction(view.name, self)
+                action.triggered.connect(lambda _checked=False, v=view: self._delete_view(v))
+                remove.addAction(action)
+
+    def _save_view(self) -> None:
+        if self.model.filters.is_empty() and not self.model.sort_keys:
+            self.statusBar().showMessage(
+                "There is nothing to save yet: set a filter or a sort order first.", 6000
+            )
+            return
+        name, accepted = QInputDialog.getText(
+            self, "Save this view", "Call it:", text=self.model.filters.describe()[:40]
+        )
+        if not accepted or not name.strip():
+            return
+
+        def apply() -> bool:
+            self.service.save_view(
+                name,
+                subcollection=self.current_subcollection(),
+                filters=self.model.filters,
+                sort=list(self.model.sort_keys),
+            )
+            self.session.commit()
+            return True
+
+        if self.guard("saving the view", apply):
+            self._reload_views()
+            self.statusBar().showMessage(f"Saved “{name.strip()}”.", 5000)
+
+    def _apply_view(self, view) -> None:  # noqa: ANN001 - a SavedView
+        def apply() -> bool:
+            self.model.filters = self.service.view_filter(view)
+            self.model.set_sort_keys(self.service.view_sort(view))
+            return True
+
+        if self.guard("opening the view", apply) is None:
+            return
+        self.view.refresh_sort_indicator()
+        self._show_filter_state()
+        self.statusBar().showMessage(f"Showing “{view.name}”.", 5000)
+
+    def _delete_view(self, view) -> None:  # noqa: ANN001 - a SavedView
+        name = view.name
+
+        def apply() -> bool:
+            self.service.delete_view(view)
+            self.session.commit()
+            return True
+
+        if self.guard("deleting the view", apply):
+            self._reload_views()
+            self.statusBar().showMessage(f"Deleted “{name}”.", 5000)
 
     # -- sort values ------------------------------------------------------
 
