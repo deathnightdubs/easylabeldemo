@@ -57,20 +57,38 @@ A coin marked as sold keeps everything and is listed in italics only when you as
 
 ![Sold coins](docs/images/10-sold.png)
 
+Each of those four columns decides for itself how much to show: all of the entries, only the ones
+from one place — only Numista, only Hartill, only PCGS — or only the one you ranked first. A grade
+column additionally chooses whether to spell out modifiers, and whether to name the scale, the
+source and who assigned it.
+
+![Column settings](docs/images/11-column-settings.png)
+
+Filtering. A flat list of tests covers most questions; a nested group covers the ones it cannot,
+such as *heavier than 20 g, and either Victoria or Maria Theresia*. The operators offered come from
+each column's own type, and the match count updates as you build it.
+
+![Filter](docs/images/12-filter.png)
+
+The result, sorted by two columns: ruler ascending, then date descending within each ruler. The
+status bar says what is being hidden, because a filtered grid otherwise looks like lost data.
+
+![Filtered and sorted](docs/images/13-filtered.png)
+
 Screenshots are generated headlessly by `tools/screenshots.py`, so they can be regenerated
 rather than going stale.
 
 ## Status
 
-Documents 01 (core data model) and 02 (fields and special systems) are **implemented and tested**,
-and the **spreadsheet-style interface** is built on top of them: 260 tests, schema verified
-equivalent to the normative SQL. Nothing is released and the schema is not yet stable — test
-libraries are disposable.
+Documents 01 (core data model), 02 (fields and special systems) and the filtering, sorting and
+saved-view parts of 03 are **implemented and tested**, and the **spreadsheet-style interface** is
+built on top of them: 677 tests, schema verified equivalent to the normative SQL. Nothing is
+released and the schema is not yet stable — test libraries are disposable.
 
-Not yet built: search and filtering beyond full text (document 03), import/export and Numista
-(04), wishlists (05), labels driven from the database (06), virtual albums and photographs (07).
-The history ledger has no editor yet: purchase and sale prices can be recorded through the core and
-the CLI, but not from the interface.
+Not yet built: import/export and Numista (04), wishlists (05), labels driven from the database
+(06), virtual albums and photographs (07). Grouping and per-view column sets are the parts of
+document 03 still outstanding. The history ledger has no editor yet: purchase and sale prices can
+be recorded through the core and the CLI, but not from the interface.
 
 Existing libraries are **migrated automatically** when opened by a newer build, after a backup is
 taken. See [`src/numis/migrations.py`](src/numis/migrations.py). Every schema change needs a
@@ -89,7 +107,13 @@ shipping a change without one locks people out of their own collection.
 | Clear a selection | `Del` |
 | Undo and redo everything | Including pastes and fill-downs, as single steps |
 | Sort by clicking a header | Using the sort keys, so `10 wen` follows `1 wen` |
+| Sort by several columns | `Ctrl`-click a second header: country, then date within it |
+| Filter on anything on screen | `Ctrl+F`; operators come from each column's own type |
+| Nested filter groups | *Bronze, and either Qianlong or Jiaqing* |
+| Pick out particular coins | *ID is any of …*, so a view can hold a hand-picked set |
+| Save a filter and sort as a view | *View → Saved views*; they survive reopening the library |
 | Reorder, hide and resize columns | Right-click a header |
+| Choose what a grade or catalogue column shows | Right-click its header → **Column settings** |
 | Add one row or many | 47 identical coins become 47 rows you can then edit together |
 | Delete to a Trash | Recoverable; nothing is destroyed silently |
 | Right-click a cell → set its sort value | For dates and text the app could not read |
@@ -119,7 +143,13 @@ Rejected edits explain themselves in the status bar and never enter the undo his
 - Every coin gets an identifier automatically, editable, unique, and never reused
 - A coin's subcollection can be changed at any time, keeping all of its values
 - Bulk add and bulk edit
-- Full-text search that works for two-character CJK terms and folds diacritics
+- Full-text search that works for two-character CJK terms and folds diacritics, kept up to date
+  automatically so it never goes stale against what you just typed
+- Filtering, searching and sorting as one question rather than three: *Qianlong cash, graded,
+  heaviest first*
+- Grade columns that sort by the calculated value, so `MS63` compares with `gVF` and `AU Details`
+  sits immediately below `AU`
+- Saved views, remembering a filter, a multi-column sort order, or a hand-picked set of coins
 
 ## A note on where to put it
 

@@ -116,10 +116,11 @@ the ones you actually use.
 
 A coin can have as many as you like, from as many catalogues as you like.
 
-You choose how to see them: a separate column per catalogue (a *KM* column, a *Hartill* column), or a
-single column listing all of them. Crucially, **even the single combined column can be sorted and
-filtered by one specific catalogue** — you pick which one that column sorts by, and you can filter for
-"has a Hartill number" or "Hartill number between 22.100 and 22.199".
+You choose how to see them: every number in one cell, only the ones from one catalogue (making it a
+*Hartill* column), or just the one you ranked first. Crucially, **a column narrowed to one catalogue
+sorts and filters by that catalogue**, and you can drop the repeated `H` prefix so it reads `1.01`
+rather than `H 1.01` on every row. You can filter for "is in Hartill" or "Hartill number between
+22.100 and 22.199".
 
 Numbers sort the way a catalogue actually reads, not the way a computer sorts text. `2` comes before
 `10`, `1042a` follows `1042`, and `A54` sits next to `54` instead of being flung into the
@@ -264,6 +265,41 @@ convenience.
 
 ---
 
+## Narrowing it down
+
+Searching, filtering and sorting are one question, not three, because that is how they are actually
+asked: *Qianlong cash, graded, heaviest first.*
+
+**Filtering** is a list of tests — a column, something to ask of it, a value — matched with *all* or
+*any* of them. What you can ask depends on the column: a date column offers "is in the decade of", a
+weight column offers "is at least", a notes column offers only "contains". You never have to
+remember which; only the sensible options are offered.
+
+When a flat list is not enough, a group covers the rest: *bronze, and either Qianlong or Jiaqing*.
+That question cannot be written as a list of conditions at all, and it is an ordinary thing to want.
+
+One deliberate choice worth knowing: **"metal is not bronze" does not include coins with no metal
+recorded.** A coin that records nothing makes no claim about its metal, and counting it would fill a
+narrowing filter with blank rows. If you do want the blanks as well, you ask for it — *any of: metal
+is empty, metal is not bronze* — and it reads as exactly what it is.
+
+**Sorting** stacks. Click a header to sort by it; Ctrl-click a second to sort by that *within* the
+first, so *country, then date* is two clicks. Blanks always sort to the bottom, whichever direction
+you choose, because a blank is not "smaller than everything" — it is missing.
+
+Grades sort by the number they work out to, which is the whole reason grades are typed with a value
+rather than chosen from a list: `MS63` can be compared with `gVF`, and `AU Details` sits immediately
+below `AU` instead of at the bottom of the collection.
+
+**Saved views** remember a filter and a sort order under a name. A view can also just be a list of
+particular coins — *ID is any of 3, 7, 11* — which is the answer to "I want this handful of coins
+grouped together" without a coin needing to belong to two subcollections at once.
+
+Whenever a filter is on, the status bar says what is being hidden. A filtered grid otherwise looks
+exactly like a collection that has lost data.
+
+---
+
 ## What we are deliberately leaving until later
 
 | Left for later | Why it is safe to wait |
@@ -281,9 +317,10 @@ safely wait.
 
 ## Order of work
 
-1. **The database** — coins, your own columns, subcollections, bulk add and edit, history log.
+1. **The database** — coins, your own columns, subcollections, bulk add and edit, history log. ✅
 2. **Sorting, searching and filtering** — advanced sorting, saved views, smart filters. Treated as
-   equally important to the database itself, since a collection you cannot slice is just a list.
+   equally important to the database itself, since a collection you cannot slice is just a list. ✅
+   *(Grouping and per-view column sets are the parts still outstanding.)*
 3. **Import and export** — spreadsheets in and out, then Numista: you paste in a list of Numista
    IDs, choose which of their fields map onto which of your columns, and they come in as coins.
 4. **Wishlist** — the list of what you are hunting, including "any one of these catalogue numbers

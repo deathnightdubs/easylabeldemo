@@ -401,7 +401,7 @@ CREATE INDEX        ix_sgm_cert ON specimen_grade_modifier(certification_id);
 -- ---------------------------------------------------------------------------
 -- 7. Certification. Ships empty. Several certifications may be current at once
 --    (for example a TPG grade plus a third-party endorsement sticker), so
---    'current' is not unique; only is_primary is.
+--    'current' is not unique; rank decides which one a single-value column shows.
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE grading_company (
