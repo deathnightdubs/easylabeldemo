@@ -72,8 +72,10 @@ Not yet built: search and filtering beyond full text (document 03), import/expor
 The history ledger has no editor yet: purchase and sale prices can be recorded through the core and
 the CLI, but not from the interface.
 
-Database migrations are deferred: while the schema is unstable and no real data exists, Alembic
-would only add ceremony. It arrives before the first release.
+Existing libraries are **migrated automatically** when opened by a newer build, after a backup is
+taken. See [`src/numis/migrations.py`](src/numis/migrations.py). Every schema change needs a
+migration there and a bump of `SCHEMA_VERSION`; there is a test asserting the two agree, because
+shipping a change without one locks people out of their own collection.
 
 ### Spreadsheet behaviours in the grid
 
@@ -118,6 +120,12 @@ Rejected edits explain themselves in the status bar and never enter the undo his
 - A coin's subcollection can be changed at any time, keeping all of its values
 - Bulk add and bulk edit
 - Full-text search that works for two-character CJK terms and folds diacritics
+
+## A note on where to put it
+
+Keep the folder somewhere you own, such as `C:\Users\<you>\easylabeldemo`. Avoid Windows system
+directories like `C:\Windows\System32`: writing there usually needs administrator rights, and a
+collection database is not a system file.
 
 ## Setting up on Windows with VS Code
 
