@@ -1,140 +1,311 @@
-"""Grading across incompatible standards, with details grades and stickers."""
+"""Grading: typed grades, calculated values, and how a grade reads."""
 
 from __future__ import annotations
 
 import pytest
 
 from numis.errors import NumisError
-from numis.grading import is_problem_grade
+from numis.grading import GradeDisplay, is_problem_grade, render, suggest_base_value
 
 
-def test_a_new_library_has_no_grading_scales(svc):
-    """Blank slate: nothing is shipped, so nothing can be mistaken for a decision."""
+def test_a_new_library_has_no_grading_data(svc):
+    """Blank slate: nothing shipped, so nothing can be mistaken for a decision."""
     from numis.models import GradeLevel, GradeModifier, GradeScale
 
     for model in (GradeScale, GradeLevel, GradeModifier):
         assert svc.session.query(model).count() == 0
 
 
-def test_levels_resolve_by_alias(svc, sheldon):
-    coin = svc.add_specimen(svc.create_subcollection("US"), display_name="Morgan")
-    for spelling in ("MS63", "MS-63", "MS 63", "ms63"):
-        grade = svc.add_grade(coin, sheldon, spelling)
+class TestTypedGrades:
+    def test_a_grade_is_typed_with_what_it_is_worth(self, svc, modern, sheldon):
+        coin = svc.add_specimen(modern)
+        grade = svc.add_grade(coin, sheldon, "MS63", base_value=63.0)
+        assert grade.grade_label == "MS63"
+        assert grade.base_value == 63.0
         assert grade.normalised == 63.0
 
+    def test_the_same_grade_can_be_used_on_many_coins(self, svc, modern, sheldon):
+        """The old model kept a registry of grades, and a repeat was a constraint violation
+        that took the application down. Nothing is registered now, so this is unremarkable."""
+        for _ in range(3):
+            coin = svc.add_specimen(modern)
+            grade = svc.add_grade(coin, sheldon, "MS63", base_value=63.0)
+            assert grade.normalised == 63.0
 
-def test_unknown_level_is_refused_by_name(svc, sheldon, modern):
-    coin = svc.add_specimen(modern)
-    with pytest.raises(NumisError) as info:
-        svc.add_grade(coin, sheldon, "MS99")
-    assert "MS99" in str(info.value)
+    def test_a_number_in_the_label_is_offered_as_the_value(self, svc, modern, sheldon):
+        coin = svc.add_specimen(modern)
+        grade = svc.add_grade(coin, sheldon, "MS63")
+        assert grade.base_value == 63.0
+
+    def test_a_grade_with_no_number_asks_rather_than_inventing_one(self):
+        assert suggest_base_value("gVF") is None
+        assert suggest_base_value("MS63") == 63.0
+        assert suggest_base_value("8") == 8.0
+
+    def test_a_grade_needs_a_label(self, svc, modern, sheldon):
+        coin = svc.add_specimen(modern)
+        with pytest.raises(NumisError, match="needs a label"):
+            svc.add_grade(coin, sheldon, "   ")
+
+    def test_a_grade_can_have_no_scale_at_all(self, svc, modern):
+        """Somebody's own opinion does not belong to a published standard."""
+        coin = svc.add_specimen(modern)
+        grade = svc.add_grade(coin, None, "about VF", base_value=25.0, source="self")
+        assert grade.grade_scale_id is None
+        assert grade.normalised == 25.0
+
+    def test_editing_a_grade_recalculates_it(self, svc, modern, sheldon, modifiers):
+        coin = svc.add_specimen(modern)
+        grade = svc.add_grade(coin, sheldon, "MS63", base_value=63.0)
+        svc.update_grade(grade, grade_label="MS64", base_value=64.0, modifiers=[("PLUS", None)])
+        assert grade.grade_label == "MS64"
+        assert grade.normalised == pytest.approx(64.25)
+        assert grade.raw_text == "MS64+"
 
 
-class TestSharedAxis:
-    @pytest.fixture
-    def graded(self, svc, modern, sheldon, adjectival, chinese10, modifiers):
-        """The worked example from docs/design/02, Part 4.2."""
+class TestCalculatedValue:
+    def test_modifiers_add_up(self, svc, modern, sheldon, modifiers):
+        coin = svc.add_specimen(modern)
+        grade = svc.add_grade(
+            coin, sheldon, "MS63", base_value=63.0, modifiers=[("FB", None), ("CAC", "Gold")]
+        )
+        assert grade.normalised == pytest.approx(63.0 + 0.15 + 0.15)
+
+    def test_details_sits_just_below_its_base_grade(self, svc, modern, sheldon, modifiers):
+        coin = svc.add_specimen(modern)
+        clean = svc.add_grade(coin, sheldon, "MS63", base_value=63.0)
+        other = svc.add_specimen(modern)
+        problem = svc.add_grade(
+            other, sheldon, "MS63", base_value=63.0,
+            modifiers=[("DETAILS", "Harshly Cleaned")],
+        )
+        assert 62.0 < problem.normalised < clean.normalised
+
+    def test_a_grade_with_no_value_is_not_comparable(self, svc, modern, sheldon):
+        coin = svc.add_specimen(modern)
+        grade = svc.add_grade(coin, sheldon, "gVF", base_value=None)
+        assert grade.normalised is None
+
+    def test_incompatible_standards_share_one_order(
+        self, svc, modern, sheldon, adjectival, chinese10, modifiers
+    ):
+        """The worked example: three standards, stickers and problem grades, one ordering."""
         cases = [
-            ("MS63 CAC gold", sheldon, "MS63", ["CACGOLD"], "tpg", "NGC", None),
-            ("MS63 CAC green", sheldon, "MS63", ["CACG"], "tpg", "NGC", None),
-            ("MS63", sheldon, "MS63", [], "tpg", "NGC", None),
-            ("MS63 Details", sheldon, "MS63", ["DETAILS"], "tpg", "NGC", "Cleaned"),
-            ("MS62", sheldon, "MS62", [], "tpg", "PCGS", None),
-            ("AU", adjectival, "AU", [], "self", "me", None),
-            ("AU Details", adjectival, "AU", ["DETAILS"], "seller", "dealer", "Scratches"),
-            ("8", chinese10, "8", [], "tpg", "GBCA", None),
-            ("6", chinese10, "6", [], "self", "me", None),
-            ("VF", adjectival, "VF", [], "seller", "dealer", None),
+            (sheldon, "MS63", 63.0, [("CAC", "Gold")]),
+            (sheldon, "MS63", 63.0, [("CAC", "Green")]),
+            (sheldon, "MS63", 63.0, []),
+            (sheldon, "MS63", 63.0, [("DETAILS", "Cleaned")]),
+            (sheldon, "MS62", 62.0, []),
+            (adjectival, "AU", 53.0, []),
+            (adjectival, "AU", 53.0, [("DETAILS", "Scratches")]),
+            (chinese10, "8", 50.0, []),
+            (chinese10, "6", 35.0, []),
+            (adjectival, "VF", 27.5, []),
         ]
         grades = []
-        for name, scale, level, mods, source, by, detail in cases:
-            coin = svc.add_specimen(modern, display_name=name)
+        for scale, label, value, mods in cases:
+            coin = svc.add_specimen(modern)
             grades.append(
-                svc.add_grade(
-                    coin, scale, level, modifiers=mods, source=source,
-                    assigned_by=by, detail_note=detail, is_primary=True,
-                )
+                svc.add_grade(coin, scale, label, base_value=value, modifiers=mods)
             )
-        return grades
 
-    def test_three_standards_share_one_ordering(self, graded):
-        ordered = sorted(graded, key=lambda g: -g.normalised)
-        assert [g.raw_text for g in ordered] == [
-            "MS63 CAC gold", "MS63 CAC green", "MS63", "MS63 Details", "MS62",
-            "AU", "AU Details", "8", "6", "VF",
+        ordered = sorted(grades, key=lambda g: -g.normalised)
+        assert [render(g) for g in ordered] == [
+            "MS63 CAC",
+            "MS63 CAC",
+            "MS63",
+            "MS63 Details",
+            "MS62",
+            "AU",
+            "AU Details",
+            "8",
+            "6",
+            "VF",
         ]
 
-    def test_details_sorts_just_below_its_base_grade(self, graded):
-        """The answered decision: below the base grade, not above the next one down."""
-        by_text = {g.raw_text: g.normalised for g in graded}
-        assert by_text["MS62"] < by_text["MS63 Details"] < by_text["MS63"]
-        assert by_text["AU Details"] < by_text["AU"]
+    def test_at_least_vf_works_across_standards(self, svc, modern, sheldon, chinese10):
+        for scale, label, value in ((sheldon, "MS63", 63.0), (chinese10, "4", 20.0)):
+            svc.add_grade(svc.add_specimen(modern), scale, label, base_value=value)
+        assert len(svc.grades_at_least(27.5)) == 1
 
-    def test_stickers_lift_a_coin_within_its_grade(self, graded):
-        by_text = {g.raw_text: g.normalised for g in graded}
-        assert by_text["MS63"] < by_text["MS63 CAC green"] < by_text["MS63 CAC gold"]
-        assert by_text["MS63 CAC gold"] < 64.0
-
-    def test_at_least_vf_works_across_every_standard(self, svc, graded):
-        found = svc.grades_at_least(27.5)
-        assert len(found) == len(graded)
-        scales = {svc.session.get(type(g.scale), g.grade_scale_id).code for g in found}
-        assert scales == {"SHELDON", "ADJ", "CN10"}
-
-    def test_problem_coins_can_be_excluded(self, svc, graded):
-        clean = svc.grades_at_least(27.5, exclude_problems=True)
-        assert "MS63 Details" not in [g.raw_text for g in clean]
-        assert "AU Details" not in [g.raw_text for g in clean]
-        assert len(clean) == len(graded) - 2
-
-    def test_the_detail_is_available_separately_from_the_grade(self, graded):
-        details = {g.raw_text: g.detail_note for g in graded if is_problem_grade(g)}
-        assert details == {"MS63 Details": "Cleaned", "AU Details": "Scratches"}
+    def test_problem_coins_can_be_excluded(self, svc, modern, sheldon, modifiers):
+        svc.add_grade(svc.add_specimen(modern), sheldon, "MS63", base_value=63.0)
+        svc.add_grade(
+            svc.add_specimen(modern), sheldon, "MS63", base_value=63.0,
+            modifiers=[("DETAILS", "Cleaned")],
+        )
+        assert len(svc.grades_at_least(0)) == 2
+        assert len(svc.grades_at_least(0, exclude_problems=True)) == 1
 
 
-class TestMultipleGrades:
+class TestHowAGradeReads:
+    def _grade(self, svc, modern, scale, label, value, mods):
+        return svc.add_grade(
+            svc.add_specimen(modern), scale, label, base_value=value, modifiers=mods
+        )
+
+    def test_a_plus_attaches_with_no_space(self, svc, modern, sheldon, modifiers):
+        grade = self._grade(svc, modern, sheldon, "MS63", 63.0, [("PLUS", None)])
+        assert render(grade) == "MS63+"
+
+    def test_a_star_attaches_with_no_space(self, svc, modern, sheldon, modifiers):
+        grade = self._grade(svc, modern, sheldon, "MS63", 63.0, [("STAR", None)])
+        assert render(grade) == "MS63*"
+
+    def test_other_modifiers_are_separated_and_abbreviated(
+        self, svc, modern, sheldon, modifiers
+    ):
+        grade = self._grade(svc, modern, sheldon, "MS63", 63.0, [("FB", None), ("BN", None)])
+        assert render(grade) == "MS63 FB BN"
+
+    def test_modifiers_read_in_a_settled_order(self, svc, modern, sheldon, modifiers):
+        """So two coins with the same modifiers never show them differently."""
+        one = self._grade(svc, modern, sheldon, "MS63", 63.0, [("BN", None), ("FB", None)])
+        two = self._grade(svc, modern, sheldon, "MS63", 63.0, [("FB", None), ("BN", None)])
+        assert render(one) == render(two)
+
+    def test_modifiers_can_be_hidden_entirely(self, svc, modern, sheldon, modifiers):
+        grade = self._grade(svc, modern, sheldon, "MS63", 63.0, [("FB", None)])
+        assert render(grade, GradeDisplay(modifiers=False)) == "MS63"
+
+    def test_a_sticker_shows_its_issuer_then_its_value(self, svc, modern, sheldon, modifiers):
+        grade = self._grade(svc, modern, sheldon, "MS63", 63.0, [("CAC", "Gold")])
+        assert render(grade) == "MS63 CAC"
+        assert render(grade, GradeDisplay(modifier_details=True)) == "MS63 CAC Gold"
+
+    def test_details_names_the_problem_only_when_asked(self, svc, modern, adjectival, modifiers):
+        grade = self._grade(
+            svc, modern, adjectival, "AU", 53.0, [("DETAILS", "Harshly Cleaned")]
+        )
+        assert render(grade) == "AU Details"
+        assert render(grade, GradeDisplay(modifier_details=True)) == "AU Details — Harshly Cleaned"
+
+    def test_the_scale_source_and_grader_can_be_shown(self, svc, modern, sheldon):
+        grade = svc.add_grade(
+            svc.add_specimen(modern), sheldon, "MS63", base_value=63.0,
+            source="tpg", assigned_by="NGC",
+        )
+        assert render(grade, GradeDisplay(scale=True)) == "MS63 [SHELDON]"
+        assert render(grade, GradeDisplay(assigned_by=True)) == "MS63 [NGC]"
+        assert "SHELDON" in render(grade, GradeDisplay.full())
+
+    def test_a_grader_can_be_kept_out_of_columns(self, svc, modern, sheldon):
+        """A dealer's name on fifty coins is noise once you know it is theirs."""
+        grade = svc.add_grade(
+            svc.add_specimen(modern), sheldon, "MS63", base_value=63.0,
+            assigned_by="Bob Reis", hide_assigned_by=True,
+        )
+        assert render(grade, GradeDisplay(assigned_by=True)) == "MS63"
+
+        shown = svc.add_grade(
+            svc.add_specimen(modern), sheldon, "MS63", base_value=63.0, assigned_by="NGC"
+        )
+        assert render(shown, GradeDisplay(assigned_by=True)) == "MS63 [NGC]"
+
+    def test_the_cached_text_matches_the_compact_rendering(self, svc, modern, sheldon, modifiers):
+        grade = self._grade(svc, modern, sheldon, "MS63", 63.0, [("CAC", "Gold")])
+        assert grade.raw_text == render(grade)
+
+
+class TestSeveralGrades:
     def test_a_coin_may_hold_grades_from_several_sources(self, svc, modern, sheldon, adjectival):
         coin = svc.add_specimen(modern, display_name="Morgan")
-        svc.add_grade(coin, sheldon, "MS63", source="tpg", assigned_by="NGC", is_primary=True)
-        svc.add_grade(coin, adjectival, "AU", source="seller", assigned_by="dealer")
-        assert len(coin.grades) == 2
+        svc.add_grade(coin, sheldon, "MS63", base_value=63.0, source="tpg", assigned_by="NGC")
+        svc.add_grade(coin, adjectival, "AU", base_value=53.0, source="seller")
+        assert len(svc.grades_for(coin)) == 2
 
-    def test_the_primary_grade_is_chosen_by_the_user(self, svc, modern, sheldon, adjectival):
-        """Never inferred from recency or from the authority of the source."""
-        coin = svc.add_specimen(modern, display_name="Morgan")
-        tpg = svc.add_grade(coin, sheldon, "MS63", source="tpg", is_primary=True)
-        dealer = svc.add_grade(coin, adjectival, "AU", source="seller")
-
-        assert svc.primary_grade(coin) is tpg  # not changed by adding a newer grade
-        svc.set_primary_grade(coin, dealer)
-        assert svc.primary_grade(coin) is dealer
-        assert tpg.is_primary == 0
-
-    def test_only_one_grade_can_be_primary(self, svc, modern, sheldon):
+    def test_new_grades_queue_behind_the_first(self, svc, modern, sheldon):
         coin = svc.add_specimen(modern)
-        first = svc.add_grade(coin, sheldon, "MS63", is_primary=True)
-        second = svc.add_grade(coin, sheldon, "MS62", is_primary=True)
-        assert (first.is_primary, second.is_primary) == (0, 1)
+        first = svc.add_grade(coin, sheldon, "MS63", base_value=63.0)
+        second = svc.add_grade(coin, sheldon, "MS62", base_value=62.0)
+        assert (first.rank, second.rank) == (1, 2)
+        assert svc.primary_grade(coin) is first
 
-    def test_a_grade_from_another_specimen_is_refused(self, svc, modern, sheldon):
-        mine = svc.add_specimen(modern)
-        theirs = svc.add_specimen(modern)
-        grade = svc.add_grade(theirs, sheldon, "MS63")
-        with pytest.raises(NumisError):
-            svc.set_primary_grade(mine, grade)
+    def test_the_order_of_precedence_is_the_users(self, svc, modern, sheldon, adjectival):
+        """Never inferred from recency or from the authority of the source."""
+        coin = svc.add_specimen(modern)
+        tpg = svc.add_grade(coin, sheldon, "MS63", base_value=63.0, source="tpg")
+        dealer = svc.add_grade(coin, adjectival, "AU", base_value=53.0, source="seller")
+        assert svc.primary_grade(coin) is tpg
+
+        svc.reorder([dealer, tpg])
+        assert svc.primary_grade(coin) is dealer
+        assert (dealer.rank, tpg.rank) == (1, 2)
+
+    def test_ranks_can_be_set_directly(self, svc, modern, sheldon):
+        coin = svc.add_specimen(modern)
+        grade = svc.add_grade(coin, sheldon, "MS63", base_value=63.0)
+        svc.set_rank(grade, 4)
+        assert grade.rank == 4
+        svc.set_rank(grade, 0)
+        assert grade.rank == 1  # never below the front
 
 
-def test_raw_text_records_exactly_what_was_entered(svc, modern, sheldon, modifiers):
-    coin = svc.add_specimen(modern)
-    grade = svc.add_grade(coin, sheldon, "MS63", modifiers=["CACG"])
-    assert grade.raw_text == "MS63 CAC green"
+class TestModifierManagement:
+    def test_modifiers_of_every_kind_can_be_defined(self, svc, modifiers):
+        kinds = {modifier.kind for modifier in svc.modifiers()}
+        assert kinds == {"detail", "sticker", "qualifier", "strike", "colour"}
+
+    def test_an_unknown_kind_is_refused_and_lists_the_options(self, svc):
+        with pytest.raises(NumisError, match="unknown modifier kind"):
+            svc.create_grade_modifier("X", "X", "nonsense", 0.0)
+
+    def test_a_modifier_can_be_renamed_and_grades_follow(self, svc, modern, sheldon, modifiers):
+        coin = svc.add_specimen(modern)
+        grade = svc.add_grade(coin, sheldon, "MS63", base_value=63.0, modifiers=[("FB", None)])
+        assert grade.raw_text == "MS63 FB"
+
+        svc.update_grade_modifier(modifiers["FB"], abbreviation="FBands")
+        assert grade.raw_text == "MS63 FBands"
+
+    def test_changing_the_effect_recalculates_every_grade_using_it(
+        self, svc, modern, sheldon, modifiers
+    ):
+        coin = svc.add_specimen(modern)
+        grade = svc.add_grade(coin, sheldon, "MS63", base_value=63.0, modifiers=[("FB", None)])
+        assert grade.normalised == pytest.approx(63.15)
+
+        svc.update_grade_modifier(modifiers["FB"], normalised_delta=1.0)
+        svc.refresh_grade_text(grade)
+        assert grade.normalised == pytest.approx(64.0)
+
+    def test_usage_is_counted_before_deleting(self, svc, modern, sheldon, modifiers):
+        coin = svc.add_specimen(modern)
+        svc.add_grade(coin, sheldon, "MS63", base_value=63.0, modifiers=[("FB", None)])
+        assert svc.modifier_usage(modifiers["FB"]) == 1
+        assert svc.modifier_usage(modifiers["BN"]) == 0
+
+    def test_deleting_an_unused_modifier_is_allowed(self, svc, modifiers):
+        assert svc.delete_grade_modifier(modifiers["BN"]) == 0
+        assert "BN" not in {modifier.code for modifier in svc.modifiers()}
+
+    def test_deleting_one_in_use_is_refused_unless_forced(self, svc, modern, sheldon, modifiers):
+        coin = svc.add_specimen(modern)
+        grade = svc.add_grade(coin, sheldon, "MS63", base_value=63.0, modifiers=[("FB", None)])
+
+        with pytest.raises(NumisError, match="used by 1 grade"):
+            svc.delete_grade_modifier(modifiers["FB"])
+
+        assert svc.delete_grade_modifier(modifiers["FB"], force=True) == 1
+        svc.session.refresh(grade)
+        assert grade.raw_text == "MS63"
+        assert grade.normalised == pytest.approx(63.0)
+
+    def test_modifiers_can_be_listed_by_kind(self, svc, modifiers):
+        assert {m.code for m in svc.modifiers("sticker")} == {"CAC", "WINGS"}
 
 
-def test_user_can_define_any_scale_they_like(svc, modern):
-    """A scale is data, so an unusual local standard needs no code change."""
-    scale = svc.create_grade_scale("SPANISH", "Spanish market")
-    svc.add_grade_level(scale, "SC", 62.0)
-    svc.add_grade_level(scale, "EBC", 45.0)
-    coin = svc.add_specimen(modern)
-    grade = svc.add_grade(coin, scale, "EBC")
-    assert grade.normalised == 45.0
+def test_details_are_recorded_per_coin_not_per_modifier(svc, modern, adjectival, modifiers):
+    """One Details modifier, different problems on different coins."""
+    first = svc.add_grade(
+        svc.add_specimen(modern), adjectival, "AU", base_value=53.0,
+        modifiers=[("DETAILS", "Harshly Cleaned")],
+    )
+    second = svc.add_grade(
+        svc.add_specimen(modern), adjectival, "XF", base_value=42.5,
+        modifiers=[("DETAILS", "Holed")],
+    )
+    detailed = GradeDisplay(modifier_details=True)
+    assert render(first, detailed) == "AU Details — Harshly Cleaned"
+    assert render(second, detailed) == "XF Details — Holed"
+    assert is_problem_grade(first) and is_problem_grade(second)

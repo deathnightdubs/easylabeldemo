@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import Qt
-from sqlalchemy.exc import IntegrityError
 
 from numis.db import create_library
-from numis.models import CatalogReference, ExternalLink, SpecimenGrade
+from numis.models import Catalog, ExternalLink, Specimen, SpecimenGrade
 from numis.ui.commands import AddChildRow, DeleteChildRow, SetInventoryCode, SetStatus
 from numis.ui.main_window import MainWindow
 
@@ -22,10 +21,7 @@ def _sheldon(service):
     Deliberately not the shared ``sheldon`` fixture: that lives in a different database, so
     mixing them silently produces a scale the window cannot see.
     """
-    scale = service.create_grade_scale("SHELDON", "Sheldon 1-70", kind="numeric")
-    for label, normalised in [("MS64", 64.0), ("MS63", 63.0), ("MS62", 62.0)]:
-        service.add_grade_level(scale, label, normalised, numeric_value=float(label[2:]))
-    return scale
+    return service.create_grade_scale("SHELDON", "Sheldon 1-70", kind="numeric")
 
 
 @pytest.fixture
@@ -216,7 +212,6 @@ class TestDetailPanel:
                     svc.session.get(type(detail.specimen), specimen_id),
                     svc.session.get(type(krause), catalog_id),
                     "2073",
-                    is_primary=True,
                 ),
             )
         )
@@ -232,7 +227,7 @@ class TestDetailPanel:
         window.view.selectRow(0)
         scale = _sheldon(service)
         grade = service.add_grade(
-            detail.specimen, scale, "MS63", source="tpg", assigned_by="NGC", is_primary=True
+            detail.specimen, scale, "MS63", base_value=63.0, source="tpg", assigned_by="NGC"
         )
         window.session.commit()
         detail.refresh()
@@ -252,7 +247,8 @@ class TestDetailPanel:
         scale = _sheldon(service)
         service.create_grade_modifier("DETAILS", "Details", "detail", -0.4)
         grade = service.add_grade(
-            detail.specimen, scale, "MS63", modifiers=["DETAILS"], is_primary=True
+            detail.specimen, scale, "MS63", base_value=63.0,
+            modifiers=[("DETAILS", "Harshly Cleaned")],
         )
         window.session.commit()
         assert grade.normalised == pytest.approx(62.6)
@@ -265,6 +261,7 @@ class TestDetailPanel:
         assert restored is not None
         assert [m.code for m in restored.modifiers] == ["DETAILS"]
         assert restored.normalised == pytest.approx(62.6)
+        assert [link.detail for link in restored.modifier_links] == ["Harshly Cleaned"]
 
     def test_links_are_listed_and_removable(self, window):
         service, detail = window.service, window.detail
@@ -292,7 +289,8 @@ class TestDetailPanel:
         detail._apply(DeleteChildRow(service, "remove link", ExternalLink, link_id))
         assert detail.links.list.count() == 0
 
-    def test_a_duplicate_catalogue_number_does_not_leave_a_broken_session(self, window):
+    def test_a_duplicate_is_reported_and_the_session_survives(self, window):
+        """A failing command used to poison the session and every later action failed."""
         service, detail = window.service, window.detail
         window.view.selectRow(0)
         krause = service.create_catalog("KM", "Krause")
@@ -300,20 +298,50 @@ class TestDetailPanel:
         service.add_reference(detail.specimen, krause, "2073")
         window.session.commit()
 
+        # The window shows failures in a dialog, which would block a headless run, so listen
+        # for the report directly instead.
+        detail.failed.disconnect()
+        reported: list[str] = []
+        detail.failed.connect(reported.append)
         specimen_id, catalog_id = detail.specimen.id, krause.id
-        with pytest.raises(IntegrityError):
-            detail._apply(
-                AddChildRow(
-                    service,
-                    "add catalogue number",
-                    lambda svc: svc.add_reference(
-                        svc.session.get(type(detail.specimen), specimen_id),
-                        svc.session.get(CatalogReference, 1).catalog,
-                        "2073",
-                    ),
-                )
+
+        applied = detail._apply(
+            AddChildRow(
+                service,
+                "add catalogue number",
+                lambda svc: svc.add_reference(
+                    svc.session.get(Specimen, specimen_id),
+                    svc.session.get(Catalog, catalog_id),
+                    "2073",
+                ),
             )
-        service.session.rollback()
-        # The session must still be usable afterwards.
-        assert service.references_for(service.session.get(type(detail.specimen), specimen_id))
-        del catalog_id
+        )
+
+        assert applied is False
+        assert reported and "already recorded" in reported[0]
+
+        # The session is still usable, which is the whole point.
+        assert len(service.references_for(service.session.get(Specimen, specimen_id))) == 1
+        assert window.model.rowCount() == 3
+        window._add_rows(1)
+        assert window.model.rowCount() == 4
+
+
+class TestRowContextMenu:
+    """Requested: reach a coin's details by right-clicking its row."""
+
+    def test_the_details_action_reveals_the_panel_for_that_row(self, window):
+        window.detail.setVisible(False)
+        window.view.selectRow(1)
+        window._show_details()
+        # isVisibleTo rather than isVisible: the window itself is never shown in a headless run.
+        assert window.detail.isVisibleTo(window)
+        assert window.detail.specimen is window.model.specimen_at(1)
+
+    def test_the_action_is_offered_in_the_row_context_menu(self, window):
+        assert window.view.details_action is window.details_action
+
+    def test_it_says_so_when_nothing_is_selected(self, window):
+        window.view.clearSelection()
+        window._show_details()
+        assert "Select a coin" in window.statusBar().currentMessage()

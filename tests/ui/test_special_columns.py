@@ -24,7 +24,7 @@ def test_a_catalogue_column_shows_the_numbers(qapp, svc, modern, undo):
     svc.show_special_block(modern, "catalogues", display_label="References", show_in_table=True)
     krause = svc.create_catalog("KM", "Krause")
     coin = svc.add_specimen(modern, display_name="Thaler")
-    svc.add_reference(coin, krause, "KM#1866", is_primary=True)
+    svc.add_reference(coin, krause, "KM#1866", rank=1)
 
     model = _model(svc, modern, undo)
     headers = [
@@ -45,7 +45,7 @@ def test_special_columns_are_not_editable_yet(qapp, svc, modern, undo):
 def test_a_grade_column_shows_the_primary_grade(qapp, svc, modern, undo, sheldon):
     svc.show_special_block(modern, "grades", display_label="Grade", show_in_table=True)
     coin = svc.add_specimen(modern)
-    svc.add_grade(coin, sheldon, "MS63", source="tpg", assigned_by="NGC", is_primary=True)
+    svc.add_grade(coin, sheldon, "MS63", source="tpg", assigned_by="NGC", rank=1)
 
     model = _model(svc, modern, undo)
     headers = [
@@ -58,7 +58,7 @@ def test_a_certification_column_shows_current_certifications(qapp, svc, modern, 
     svc.show_special_block(modern, "certifications", display_label="Cert", show_in_table=True)
     coin = svc.add_specimen(modern)
     ngc = svc.create_grading_company("NGC", "NGC")
-    svc.add_certification(coin, ngc, cert_number="2871554-013", is_primary=True)
+    svc.add_certification(coin, ngc, cert_number="2871554-013", rank=1)
 
     model = _model(svc, modern, undo)
     headers = [
@@ -94,7 +94,7 @@ def test_special_columns_survive_the_master_view(qapp, svc, modern, ancients, un
     svc.show_special_block(modern, "catalogues", display_label="References", show_in_table=True)
     krause = svc.create_catalog("KM", "Krause")
     coin = svc.add_specimen(modern)
-    svc.add_reference(coin, krause, "1866", is_primary=True)
+    svc.add_reference(coin, krause, "1866", rank=1)
     svc.add_specimen(ancients)
 
     model = SpecimenTableModel(svc, undo)

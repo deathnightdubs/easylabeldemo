@@ -84,7 +84,7 @@ class TestTrash:
         km = svc.create_catalog("KM", "Krause")
         coin = svc.add_specimen(modern, values={"note": "keeper"})
         svc.add_reference(coin, km, "2073")
-        svc.add_grade(coin, sheldon, "MS63", is_primary=True)
+        svc.add_grade(coin, sheldon, "MS63", rank=1)
         svc.add_link(coin, "https://example.invalid/record")
         svc.add_event(coin, "acquired", amount="10.00")
 

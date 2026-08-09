@@ -900,7 +900,7 @@ class CollectionService:
         catalog: Catalog,
         number: str,
         *,
-        is_primary: bool = False,
+        rank: int | None = None,
         qualifier: str | None = None,
         certainty: str = "certain",
     ) -> CatalogReference:
@@ -909,12 +909,10 @@ class CollectionService:
             catalog_code=catalog.code,
             letter_prefix_order=catalog.letter_prefix_order,
         )
-        if is_primary:
-            self._clear_primary_reference(specimen)
         reference = CatalogReference(
             catalog_id=catalog.id,
             specimen_id=specimen.id,
-            is_primary=int(is_primary),
+            rank=rank if rank is not None else self._next_rank(CatalogReference, specimen),
             qualifier=qualifier,
             certainty=certainty,
             **columns,
@@ -923,22 +921,15 @@ class CollectionService:
         self.session.flush()
         return reference
 
-    def _clear_primary_reference(self, specimen: Specimen) -> None:
-        for existing in self.session.scalars(
-            select(CatalogReference).where(
-                CatalogReference.specimen_id == specimen.id, CatalogReference.is_primary == 1
-            )
-        ):
-            existing.is_primary = 0
-        self.session.flush()
-
     def references_for(
         self, specimen: Specimen, catalog: Catalog | None = None
     ) -> list[CatalogReference]:
         query = select(CatalogReference).where(CatalogReference.specimen_id == specimen.id)
         if catalog is not None:
             query = query.where(CatalogReference.catalog_id == catalog.id)
-        return list(self.session.scalars(query.order_by(CatalogReference.sort_segments)))
+        return list(
+            self.session.scalars(query.order_by(CatalogReference.rank, CatalogReference.id))
+        )
 
     def combined_catalogue_cell(self, specimen: Specimen, separator: str = " · ") -> str:
         """All catalogue numbers in one cell, as a combined column displays them."""
@@ -1031,109 +1022,290 @@ class CollectionService:
         self.session.flush()
         return level
 
-    def create_grade_modifier(
-        self, code: str, label: str, kind: str, normalised_delta: float = 0.0
-    ) -> GradeModifier:
-        modifier = GradeModifier(
-            code=code, label=label, kind=kind, normalised_delta=normalised_delta
-        )
-        self.session.add(modifier)
-        self.session.flush()
-        return modifier
-
     def add_grade(
         self,
         specimen: Specimen,
-        scale: GradeScale,
-        level_label: str,
+        scale: GradeScale | None,
+        grade_label: str,
         *,
-        modifiers: Sequence[GradeModifier | str] = (),
+        base_value: float | None = None,
+        modifiers: Sequence[tuple[GradeModifier | str, str | None]]
+        | Sequence[GradeModifier | str] = (),
         source: str = "self",
         assigned_by: str | None = None,
+        hide_assigned_by: bool = False,
         assigned_on: date | None = None,
         detail_note: str | None = None,
-        is_primary: bool = False,
-        raw_text: str | None = None,
+        rank: int | None = None,
+        notes: str | None = None,
     ) -> SpecimenGrade:
-        """Record a grade. A coin may hold several from several sources."""
-        level = grading.resolve_level(self.session, scale, level_label)
-        if level is None:
-            raise NumisError(f"{scale.code} has no grade level {level_label!r}")
+        """Record a grade.
 
-        resolved: list[GradeModifier] = []
-        for modifier in modifiers:
-            if isinstance(modifier, GradeModifier):
-                resolved.append(modifier)
-                continue
-            found = self.session.scalar(
-                select(GradeModifier).where(GradeModifier.code == modifier)
-            )
-            if found is None:
-                raise NumisError(f"no grade modifier with code {modifier!r}")
-            resolved.append(found)
+        ``grade_label`` is whatever the user wants to see and ``base_value`` what it counts as.
+        Nothing is looked up, so typing a grade that another coin already uses is ordinary rather
+        than an error. ``modifiers`` accepts either plain modifiers or ``(modifier, detail)``
+        pairs, the detail being what that one says: ``Harshly Cleaned``, ``Gold``, ``Brown``.
+        """
+        label = grade_label.strip()
+        if not label:
+            raise NumisError("a grade needs a label, for example MS63 or gVF")
+        if base_value is None:
+            base_value = grading.suggest_base_value(label)
 
-        if is_primary:
-            self._clear_primary_grade(specimen)
-
+        resolved = [self._resolve_modifier(entry) for entry in modifiers]
         grade = SpecimenGrade(
             specimen_id=specimen.id,
-            grade_scale_id=scale.id,
-            grade_level_id=level.id,
-            raw_text=raw_text or grading.describe(level.label, resolved),
-            normalised=grading.compute_normalised(level.normalised, resolved),
+            grade_scale_id=scale.id if scale else None,
+            grade_label=label,
+            base_value=base_value,
+            raw_text=label,
+            normalised=grading.calculated_value(
+                base_value, [modifier for modifier, _ in resolved]
+            ),
             detail_note=detail_note,
             source=source,
             assigned_by=assigned_by,
+            hide_assigned_by=int(hide_assigned_by),
             assigned_on=assigned_on,
-            is_primary=int(is_primary),
+            rank=rank if rank is not None else self._next_rank(SpecimenGrade, specimen),
+            notes=notes,
         )
         self.session.add(grade)
         self.session.flush()
-        for modifier in resolved:
+        for order, (modifier, detail) in enumerate(resolved):
             self.session.add(
-                SpecimenGradeModifier(specimen_grade_id=grade.id, grade_modifier_id=modifier.id)
+                SpecimenGradeModifier(
+                    specimen_grade_id=grade.id,
+                    grade_modifier_id=modifier.id,
+                    detail=detail,
+                    sort_order=order,
+                )
             )
+        self.session.flush()
+        self.refresh_grade_text(grade)
+        return grade
+
+    def update_grade(
+        self,
+        grade: SpecimenGrade,
+        *,
+        scale: GradeScale | None = None,
+        grade_label: str | None = None,
+        base_value: float | None = None,
+        modifiers: Sequence[tuple[GradeModifier | str, str | None]] | None = None,
+        source: str | None = None,
+        assigned_by: str | None = None,
+        hide_assigned_by: bool | None = None,
+        detail_note: str | None = None,
+    ) -> SpecimenGrade:
+        """Change an existing grade. Only the arguments given are touched."""
+        if grade_label is not None:
+            label = grade_label.strip()
+            if not label:
+                raise NumisError("a grade needs a label")
+            grade.grade_label = label
+        if scale is not None:
+            grade.grade_scale_id = scale.id
+        if base_value is not None:
+            grade.base_value = base_value
+        if source is not None:
+            grade.source = source
+        if assigned_by is not None:
+            grade.assigned_by = assigned_by or None
+        if hide_assigned_by is not None:
+            grade.hide_assigned_by = int(hide_assigned_by)
+        if detail_note is not None:
+            grade.detail_note = detail_note or None
+
+        if modifiers is not None:
+            for link in list(grade.modifier_links):
+                self.session.delete(link)
+            self.session.flush()
+            for order, entry in enumerate(modifiers):
+                modifier, detail = self._resolve_modifier(entry)
+                self.session.add(
+                    SpecimenGradeModifier(
+                        specimen_grade_id=grade.id,
+                        grade_modifier_id=modifier.id,
+                        detail=detail,
+                        sort_order=order,
+                    )
+                )
+            self.session.flush()
+
+        self.session.refresh(grade)
+        self.refresh_grade_text(grade)
+        return grade
+
+    def refresh_grade_text(self, grade: SpecimenGrade) -> SpecimenGrade:
+        """Recompute the cached display text and the comparable value."""
+        grade.normalised = grading.calculated_value(grade.base_value, grade.modifiers)
+        grade.raw_text = grading.render(grade, grading.GradeDisplay(modifier_details=False))
         self.session.flush()
         return grade
 
-    def _clear_primary_grade(self, specimen: Specimen) -> None:
-        for existing in self.session.scalars(
-            select(SpecimenGrade).where(
-                SpecimenGrade.specimen_id == specimen.id, SpecimenGrade.is_primary == 1
-            )
-        ):
-            existing.is_primary = 0
+    def _resolve_modifier(
+        self, entry: GradeModifier | str | tuple[GradeModifier | str, str | None]
+    ) -> tuple[GradeModifier, str | None]:
+        detail: str | None = None
+        if isinstance(entry, tuple):
+            entry, detail = entry
+        if isinstance(entry, GradeModifier):
+            return entry, detail
+        found = self.session.scalar(select(GradeModifier).where(GradeModifier.code == entry))
+        if found is None:
+            raise NumisError(f"no grade modifier with code {entry!r}")
+        return found, detail
+
+    def _next_rank(self, model: type, specimen: Specimen) -> int:
+        """One past the lowest-priority entry, so new items go to the back."""
+        highest = self.session.scalar(
+            select(func.max(model.rank)).where(model.specimen_id == specimen.id)
+        )
+        return (highest or 0) + 1
+
+    def set_rank(self, row: Any, rank: int) -> None:
+        """Move an entry up or down the order of precedence."""
+        row.rank = max(1, int(rank))
         self.session.flush()
 
-    def set_primary_grade(self, specimen: Specimen, grade: SpecimenGrade) -> SpecimenGrade:
-        """Choose the headline grade.
-
-        Always an explicit choice: never inferred from recency, and never from the authority
-        of the source. The collector decides which opinion represents their coin.
-        """
-        if grade.specimen_id != specimen.id:
-            raise NumisError("that grade belongs to a different specimen")
-        self._clear_primary_grade(specimen)
-        grade.is_primary = 1
+    def reorder(self, rows: Sequence[Any]) -> None:
+        """Renumber a list of entries 1..n in the order given."""
+        for position, row in enumerate(rows, start=1):
+            row.rank = position
         self.session.flush()
-        return grade
 
     def primary_grade(self, specimen: Specimen) -> SpecimenGrade | None:
-        return self.session.scalar(
-            select(SpecimenGrade).where(
-                SpecimenGrade.specimen_id == specimen.id, SpecimenGrade.is_primary == 1
+        """The grade a single-value column shows: the one ranked first."""
+        return self.session.scalars(
+            select(SpecimenGrade)
+            .where(SpecimenGrade.specimen_id == specimen.id)
+            .order_by(SpecimenGrade.rank, SpecimenGrade.id)
+        ).first()
+
+    def grades_for(self, specimen: Specimen) -> list[SpecimenGrade]:
+        return list(
+            self.session.scalars(
+                select(SpecimenGrade)
+                .where(SpecimenGrade.specimen_id == specimen.id)
+                .order_by(SpecimenGrade.rank, SpecimenGrade.id)
             )
         )
 
     def grades_at_least(
         self, normalised: float, *, exclude_problems: bool = False
     ) -> list[SpecimenGrade]:
-        """Grades at or above a position on the shared axis, across every standard."""
+        """Grades at or above a position on the shared scale, across every standard."""
         query = select(SpecimenGrade).where(SpecimenGrade.normalised >= normalised)
         grades = list(self.session.scalars(query.order_by(SpecimenGrade.normalised.desc())))
         if exclude_problems:
             grades = [grade for grade in grades if not grading.is_problem_grade(grade)]
         return grades
+
+    # -- grade modifiers --------------------------------------------------
+
+    def create_grade_modifier(
+        self,
+        code: str,
+        label: str,
+        kind: str,
+        normalised_delta: float = 0.0,
+        *,
+        abbreviation: str | None = None,
+        issuer: str | None = None,
+        attach_without_space: bool = False,
+        notes: str | None = None,
+    ) -> GradeModifier:
+        if kind not in C.GRADE_MODIFIER_KINDS:
+            raise NumisError(
+                f"unknown modifier kind {kind!r}; expected one of "
+                f"{', '.join(C.GRADE_MODIFIER_KINDS)}"
+            )
+        modifier = GradeModifier(
+            code=code,
+            label=label,
+            kind=kind,
+            normalised_delta=normalised_delta,
+            abbreviation=abbreviation,
+            issuer=issuer,
+            attach_without_space=int(attach_without_space),
+            notes=notes,
+        )
+        self.session.add(modifier)
+        self.session.flush()
+        return modifier
+
+    def update_grade_modifier(self, modifier: GradeModifier, **changes: Any) -> GradeModifier:
+        """Edit a modifier. Every grade using it is re-rendered, since its reading may change."""
+        if "kind" in changes and changes["kind"] not in C.GRADE_MODIFIER_KINDS:
+            raise NumisError(f"unknown modifier kind {changes['kind']!r}")
+        for name, value in changes.items():
+            if not hasattr(modifier, name):
+                raise NumisError(f"grade modifiers have no {name!r}")
+            setattr(modifier, name, int(value) if name == "attach_without_space" else value)
+        self.session.flush()
+        for grade in self.grades_using_modifier(modifier):
+            self.session.expire(grade)
+            self.refresh_grade_text(grade)
+        return modifier
+
+    def grades_using_modifier(self, modifier: GradeModifier) -> list[SpecimenGrade]:
+        return list(
+            self.session.scalars(
+                select(SpecimenGrade)
+                .join(
+                    SpecimenGradeModifier,
+                    SpecimenGradeModifier.specimen_grade_id == SpecimenGrade.id,
+                )
+                .where(SpecimenGradeModifier.grade_modifier_id == modifier.id)
+            )
+        )
+
+    def modifier_usage(self, modifier: GradeModifier) -> int:
+        return int(
+            self.session.scalar(
+                select(func.count())
+                .select_from(SpecimenGradeModifier)
+                .where(SpecimenGradeModifier.grade_modifier_id == modifier.id)
+            )
+            or 0
+        )
+
+    def delete_grade_modifier(self, modifier: GradeModifier, *, force: bool = False) -> int:
+        """Delete a modifier. Returns how many grades it was taken off.
+
+        Refuses while in use unless ``force``, because silently changing the grade of every coin
+        carrying it would be a surprising way to lose information.
+        """
+        grades = self.grades_using_modifier(modifier)
+        if grades and not force:
+            raise NumisError(
+                f"{modifier.label!r} is used by {len(grades)} grade(s); "
+                "remove it from those first, or delete it anyway"
+            )
+        for link in list(
+            self.session.scalars(
+                select(SpecimenGradeModifier).where(
+                    SpecimenGradeModifier.grade_modifier_id == modifier.id
+                )
+            )
+        ):
+            self.session.delete(link)
+        self.session.flush()
+        self.session.delete(modifier)
+        self.session.flush()
+        for grade in grades:
+            # The link rows are gone, but the grade still holds the collection it loaded
+            # earlier, so it has to be expired before its text is recomputed.
+            self.session.expire(grade)
+            self.refresh_grade_text(grade)
+        return len(grades)
+
+    def modifiers(self, kind: str | None = None) -> list[GradeModifier]:
+        query = select(GradeModifier)
+        if kind is not None:
+            query = query.where(GradeModifier.kind == kind)
+        return list(self.session.scalars(query.order_by(GradeModifier.kind, GradeModifier.label)))
 
     # -- certification ----------------------------------------------------
 
@@ -1151,7 +1323,7 @@ class CollectionService:
         cert_number: str | None = None,
         grade: SpecimenGrade | None = None,
         status: str = "current",
-        is_primary: bool = False,
+        rank: int | None = None,
         graded_on: date | None = None,
         holder_type: str | None = None,
         supersedes: Certification | None = None,
@@ -1177,15 +1349,10 @@ class CollectionService:
                     specimen_id=specimen.id,
                 )
 
-        if is_primary:
-            self._clear_primary_certification(specimen)
-        if supersedes is not None:
-            # Only a still-current certification becomes 'superseded'. If the user already
-            # recorded *how* it ended — cracked out, crossed over — that is more specific
-            # information and must not be overwritten.
-            if supersedes.status == "current":
-                supersedes.status = "superseded"
-            supersedes.is_primary = 0
+        # Only a still-current certification becomes 'superseded'. If the user already recorded
+        # *how* it ended — cracked out, crossed over — that is more specific and must stand.
+        if supersedes is not None and supersedes.status == "current":
+            supersedes.status = "superseded"
 
         certification = Certification(
             specimen_id=specimen.id,
@@ -1193,7 +1360,7 @@ class CollectionService:
             cert_number=cert_number,
             specimen_grade_id=grade.id if grade else None,
             status=status,
-            is_primary=int(is_primary),
+            rank=rank if rank is not None else self._next_rank(Certification, specimen),
             graded_on=graded_on,
             holder_type=holder_type,
             supersedes_id=supersedes.id if supersedes else None,
@@ -1203,14 +1370,62 @@ class CollectionService:
         self.session.flush()
         return certification
 
-    def _clear_primary_certification(self, specimen: Specimen) -> None:
-        for existing in self.session.scalars(
-            select(Certification).where(
-                Certification.specimen_id == specimen.id, Certification.is_primary == 1
+    def primary_certification(self, specimen: Specimen) -> Certification | None:
+        """The certification a single-value column shows: the one ranked first."""
+        return self.session.scalars(
+            select(Certification)
+            .where(Certification.specimen_id == specimen.id, Certification.status == "current")
+            .order_by(Certification.rank, Certification.id)
+        ).first()
+
+    def primary_reference(self, specimen: Specimen) -> CatalogReference | None:
+        return self.session.scalars(
+            select(CatalogReference)
+            .where(CatalogReference.specimen_id == specimen.id)
+            .order_by(CatalogReference.rank, CatalogReference.id)
+        ).first()
+
+    def attach_sticker(
+        self,
+        certification: Certification,
+        grade: SpecimenGrade,
+        modifier: GradeModifier | str,
+        detail: str | None = None,
+    ) -> SpecimenGradeModifier:
+        """Record a sticker as issued by a certification.
+
+        A sticker is a separate opinion about a grade rather than part of it, and it comes from
+        its own company — CAC stickering a coin somebody else graded. Tying the instance to that
+        company's certification is what keeps the two facts connected.
+        """
+        resolved, _ = self._resolve_modifier(modifier)
+        link = self.session.scalar(
+            select(SpecimenGradeModifier).where(
+                SpecimenGradeModifier.specimen_grade_id == grade.id,
+                SpecimenGradeModifier.grade_modifier_id == resolved.id,
             )
-        ):
-            existing.is_primary = 0
+        )
+        if link is None:
+            link = SpecimenGradeModifier(
+                specimen_grade_id=grade.id,
+                grade_modifier_id=resolved.id,
+                sort_order=len(grade.modifier_links),
+            )
+            self.session.add(link)
+        link.detail = detail if detail is not None else link.detail
+        link.certification_id = certification.id
         self.session.flush()
+        self.refresh_grade_text(grade)
+        return link
+
+    def stickers_for(self, certification: Certification) -> list[SpecimenGradeModifier]:
+        return list(
+            self.session.scalars(
+                select(SpecimenGradeModifier).where(
+                    SpecimenGradeModifier.certification_id == certification.id
+                )
+            )
+        )
 
     def certification_history(self, specimen: Specimen) -> list[Certification]:
         """Every certification for a coin, oldest first — the crack-out and regrade trail."""

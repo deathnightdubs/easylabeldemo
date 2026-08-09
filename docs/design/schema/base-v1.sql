@@ -285,16 +285,15 @@ CREATE TABLE catalog_reference (
   qualifier     TEXT NULL,                   -- 'var.', 'cf.'
   certainty     TEXT NOT NULL DEFAULT 'certain'
                   CHECK (certainty IN ('certain','probable','cf','disputed')),
-  is_primary    INTEGER NOT NULL DEFAULT 0,
+  rank          INTEGER NOT NULL DEFAULT 1,  -- 1 is the one shown in a single-value column
   url           TEXT NULL,
   notes         TEXT NULL,
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );
 CREATE UNIQUE INDEX ux_catref      ON catalog_reference(specimen_id, catalog_id, number_norm);
-CREATE UNIQUE INDEX ux_catref_prim ON catalog_reference(specimen_id) WHERE is_primary = 1;
 CREATE INDEX        ix_catref_sort ON catalog_reference(catalog_id, sort_segments);
-CREATE INDEX        ix_catref_spec ON catalog_reference(specimen_id);
+CREATE INDEX        ix_catref_spec ON catalog_reference(specimen_id, rank);
 CREATE INDEX        ix_catref_norm ON catalog_reference(catalog_id, number_norm);
 
 
@@ -336,9 +335,16 @@ CREATE TABLE grade_modifier (
   id               INTEGER PRIMARY KEY,
   uuid             TEXT NOT NULL UNIQUE,
   code             TEXT NOT NULL UNIQUE,
-  label            TEXT NOT NULL,
-  kind             TEXT NOT NULL CHECK (kind IN ('detail','sticker','qualifier','strike')),
-  normalised_delta REAL NOT NULL DEFAULT 0,  -- keeps 'AU Details' beside 'AU'
+  label            TEXT NOT NULL,             -- full name: 'Full Bands', 'Details'
+  abbreviation     TEXT NULL,                 -- how it reads in a column: 'FB', 'BN'
+  kind             TEXT NOT NULL CHECK (kind IN
+                     ('detail','sticker','qualifier','strike','colour','contrast')),
+  -- Who issues it, for stickers: CAC, CACG, WINGS, CNAS. A sticker is not part of the
+  -- grade itself, it is a separate opinion about it, so it carries its own issuer.
+  issuer           TEXT NULL,
+  -- '+' and a star read as MS63+ and MS63*, with no space before them.
+  attach_without_space INTEGER NOT NULL DEFAULT 0,
+  normalised_delta REAL NOT NULL DEFAULT 0,   -- keeps 'AU Details' beside 'AU'
   colour           TEXT NULL,
   notes            TEXT NULL,
   created_at       TEXT NOT NULL,
@@ -350,29 +356,46 @@ CREATE TABLE specimen_grade (
   uuid           TEXT NOT NULL UNIQUE,
   specimen_id    INTEGER NOT NULL REFERENCES specimen(id) ON DELETE CASCADE,
   grade_scale_id INTEGER NULL REFERENCES grade_scale(id) ON DELETE SET NULL,
+  -- Optional. A grade is entered directly rather than chosen from a curated list, so this
+  -- only points somewhere when a preset supplied the grade.
   grade_level_id INTEGER NULL REFERENCES grade_level(id) ON DELETE SET NULL,
-  raw_text       TEXT NOT NULL,              -- exactly as entered
-  normalised     REAL NULL,                  -- level normalised + modifier deltas
-  detail_note    TEXT NULL,                  -- 'Cleaned', 'Scratches'
+  grade_label    TEXT NOT NULL,              -- what the user typed: 'MS63', 'gVF', '8'
+  base_value     REAL NULL,                  -- what that grade counts as on its own: 63
+  raw_text       TEXT NOT NULL,              -- rendered display, cached for the grid
+  -- base_value plus every modifier's delta. This is what sorting compares, so grades from
+  -- unrelated standards can be ordered together.
+  normalised     REAL NULL,
+  detail_note    TEXT NULL,                  -- free note; per-modifier detail lives on the link
   source         TEXT NOT NULL DEFAULT 'self'
                    CHECK (source IN ('self','seller','tpg','auction','other')),
   assigned_by    TEXT NULL,                  -- 'NGC', 'me', dealer name
+  -- Some graders are worth recording but not worth a column: a dealer's opinion on fifty
+  -- coins is noise once you know it is theirs.
+  hide_assigned_by INTEGER NOT NULL DEFAULT 0,
   assigned_on    TEXT NULL,
-  is_primary     INTEGER NOT NULL DEFAULT 0,
+  rank           INTEGER NOT NULL DEFAULT 1, -- 1 is the one shown; 2, 3 … behind it
   notes          TEXT NULL,
   created_at     TEXT NOT NULL,
   updated_at     TEXT NOT NULL
 );
-CREATE UNIQUE INDEX ux_grade_primary ON specimen_grade(specimen_id) WHERE is_primary = 1;
-CREATE INDEX        ix_grade_norm    ON specimen_grade(normalised);
-CREATE INDEX        ix_grade_spec    ON specimen_grade(specimen_id);
+CREATE INDEX ix_grade_norm ON specimen_grade(normalised);
+CREATE INDEX ix_grade_spec ON specimen_grade(specimen_id, rank);
 
+-- One modifier on one grade. It has a surrogate key because a certification can point at a
+-- particular instance: a CAC sticker is recorded as issued by CAC's own certification, not
+-- as an anonymous property of the grade.
 CREATE TABLE specimen_grade_modifier (
+  id                INTEGER PRIMARY KEY,
   specimen_grade_id INTEGER NOT NULL REFERENCES specimen_grade(id) ON DELETE CASCADE,
   grade_modifier_id INTEGER NOT NULL REFERENCES grade_modifier(id) ON DELETE RESTRICT,
-  PRIMARY KEY (specimen_grade_id, grade_modifier_id)
-) WITHOUT ROWID;
-CREATE INDEX ix_sgm_mod ON specimen_grade_modifier(grade_modifier_id);
+  -- What this one actually says: 'Harshly Cleaned', 'Gold', 'Full Bands', 'Brown'.
+  detail            TEXT NULL,
+  certification_id  INTEGER NULL REFERENCES certification(id) ON DELETE SET NULL,
+  sort_order        INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX ux_sgm      ON specimen_grade_modifier(specimen_grade_id, grade_modifier_id);
+CREATE INDEX        ix_sgm_mod  ON specimen_grade_modifier(grade_modifier_id);
+CREATE INDEX        ix_sgm_cert ON specimen_grade_modifier(certification_id);
 
 
 -- ---------------------------------------------------------------------------
@@ -409,7 +432,7 @@ CREATE TABLE certification (
   status             TEXT NOT NULL DEFAULT 'current' CHECK (status IN
                        ('current','pending','cracked_out','crossed_over','regraded','superseded')),
   supersedes_id      INTEGER NULL REFERENCES certification(id) ON DELETE SET NULL,
-  is_primary         INTEGER NOT NULL DEFAULT 0,
+  rank               INTEGER NOT NULL DEFAULT 1,
   population_note    TEXT NULL,
   verification_url   TEXT NULL,
   verified_at        TEXT NULL,
@@ -417,8 +440,7 @@ CREATE TABLE certification (
   created_at         TEXT NOT NULL,
   updated_at         TEXT NOT NULL
 );
-CREATE UNIQUE INDEX ux_cert_primary ON certification(specimen_id) WHERE is_primary = 1;
-CREATE INDEX        ix_cert_spec    ON certification(specimen_id, status);
+CREATE INDEX        ix_cert_spec    ON certification(specimen_id, status, rank);
 CREATE INDEX        ix_cert_number  ON certification(grading_company_id, cert_number);
 
 
@@ -438,10 +460,11 @@ CREATE TABLE external_link (
   reference   TEXT NULL,                     -- record id, lot number, page
   notes       TEXT NULL,
   sort_order  INTEGER NOT NULL DEFAULT 0,
+  rank        INTEGER NOT NULL DEFAULT 1,
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
-CREATE INDEX ix_link_spec ON external_link(specimen_id, sort_order);
+CREATE INDEX ix_link_spec ON external_link(specimen_id, rank, sort_order);
 
 
 -- ---------------------------------------------------------------------------

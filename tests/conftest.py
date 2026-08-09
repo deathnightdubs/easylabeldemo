@@ -44,46 +44,46 @@ def ancients(svc: CollectionService):
     return svc.create_subcollection("Ancients")
 
 
+#: Grades a user might type on each scale, and what they said each was worth. Nothing is
+#: pre-registered: a grade is typed with its base value, so these are just test data.
+SHELDON_VALUES = {"MS64": 64.0, "MS63": 63.0, "MS62": 62.0, "AU58": 58.0, "XF45": 45.0}
+ADJECTIVAL_VALUES = {"UNC": 60.0, "AU": 53.0, "XF": 42.5, "VF": 27.5, "F": 13.5}
+CHINESE_VALUES = {"10": 63.0, "8": 50.0, "6": 35.0, "4": 20.0}
+
+
 @pytest.fixture
 def sheldon(svc: CollectionService):
-    """A user-defined Sheldon scale. The application ships with no scales at all."""
-    scale = svc.create_grade_scale("SHELDON", "Sheldon 1-70", kind="numeric")
-    for label, normalised in [
-        ("MS64", 64.0),
-        ("MS63", 63.0),
-        ("MS62", 62.0),
-        ("AU58", 58.0),
-        ("XF45", 45.0),
-    ]:
-        svc.add_grade_level(
-            scale, label, normalised, numeric_value=float(label[2:]),
-            aliases=f"{label[:2]}-{label[2:]}|{label[:2]} {label[2:]}",
-        )
-    return scale
+    """A user-defined scale. The application ships with none, and a scale needs no levels."""
+    return svc.create_grade_scale("SHELDON", "Sheldon 1-70", kind="numeric")
 
 
 @pytest.fixture
 def adjectival(svc: CollectionService):
-    scale = svc.create_grade_scale("ADJ", "Adjectival")
-    for label, normalised in [("UNC", 60.0), ("AU", 53.0), ("XF", 42.5), ("VF", 27.5), ("F", 13.5)]:
-        svc.add_grade_level(scale, label, normalised)
-    return scale
+    return svc.create_grade_scale("ADJ", "Adjectival")
 
 
 @pytest.fixture
 def chinese10(svc: CollectionService):
-    scale = svc.create_grade_scale("CN10", "Chinese 1-10", kind="numeric")
-    for label, normalised in [("10", 63.0), ("8", 50.0), ("6", 35.0), ("4", 20.0)]:
-        svc.add_grade_level(scale, label, normalised, numeric_value=float(label))
-    return scale
+    return svc.create_grade_scale("CN10", "Chinese 1-10", kind="numeric")
 
 
 @pytest.fixture
 def modifiers(svc: CollectionService) -> dict[str, object]:
-    """Grade modifiers, with the deltas the design settled on."""
+    """Grade modifiers of every kind, with the deltas the design settled on."""
     return {
         "DETAILS": svc.create_grade_modifier("DETAILS", "Details", "detail", -0.4),
-        "CACG": svc.create_grade_modifier("CACG", "CAC green", "sticker", 0.15),
-        "CACGOLD": svc.create_grade_modifier("CACGOLD", "CAC gold", "sticker", 0.30),
-        "PLUS": svc.create_grade_modifier("PLUS", "+", "qualifier", 0.25),
+        "CAC": svc.create_grade_modifier(
+            "CAC", "CAC sticker", "sticker", 0.15, issuer="CAC", abbreviation="CAC"
+        ),
+        "WINGS": svc.create_grade_modifier(
+            "WINGS", "WINGS sticker", "sticker", 0.10, issuer="WINGS", abbreviation="WNG"
+        ),
+        "PLUS": svc.create_grade_modifier(
+            "PLUS", "+", "qualifier", 0.25, attach_without_space=True
+        ),
+        "STAR": svc.create_grade_modifier(
+            "STAR", "Star", "qualifier", 0.20, abbreviation="*", attach_without_space=True
+        ),
+        "FB": svc.create_grade_modifier("FB", "Full Bands", "strike", 0.15, abbreviation="FB"),
+        "BN": svc.create_grade_modifier("BN", "Brown", "colour", 0.0, abbreviation="BN"),
     }

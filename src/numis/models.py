@@ -428,14 +428,8 @@ class CatalogReference(UuidMixin, TimestampMixin, Base):
     __table_args__ = (
         _in("certainty", C.CATALOG_CERTAINTIES),
         Index("ux_catref", "specimen_id", "catalog_id", "number_norm", unique=True),
-        Index(
-            "ux_catref_prim",
-            "specimen_id",
-            unique=True,
-            sqlite_where=text("is_primary = 1"),
-        ),
         Index("ix_catref_sort", "catalog_id", "sort_segments"),
-        Index("ix_catref_spec", "specimen_id"),
+        Index("ix_catref_spec", "specimen_id", "rank"),
         Index("ix_catref_norm", "catalog_id", "number_norm"),
     )
 
@@ -452,7 +446,7 @@ class CatalogReference(UuidMixin, TimestampMixin, Base):
     segments_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     qualifier: Mapped[str | None] = mapped_column(String)
     certainty: Mapped[str] = mapped_column(String, nullable=False, default="certain")
-    is_primary: Mapped[bool] = mapped_column(Integer, nullable=False, default=0)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     url: Mapped[str | None] = mapped_column(String)
     notes: Mapped[str | None] = mapped_column(Text)
 
@@ -508,7 +502,7 @@ class GradeLevel(UuidMixin, TimestampMixin, Base):
 
 
 class GradeModifier(UuidMixin, TimestampMixin, Base):
-    """Something attached to a grade: Details, a sticker, a plus, a star.
+    """Something attached to a grade: Details, a sticker, a plus, a star, a strike or colour.
 
     ``normalised_delta`` is what keeps 'AU Details' sorted immediately below 'AU' rather
     than banished to the bottom of the collection.
@@ -519,26 +513,56 @@ class GradeModifier(UuidMixin, TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     code: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    #: Full name, e.g. ``Full Bands``.
     label: Mapped[str] = mapped_column(String, nullable=False)
+    #: Short form used in columns, e.g. ``FB``. Falls back to the label.
+    abbreviation: Mapped[str | None] = mapped_column(String)
     kind: Mapped[str] = mapped_column(String, nullable=False)
+    #: Who issues it, for stickers: CAC, CACG, WINGS, CNAS.
+    issuer: Mapped[str | None] = mapped_column(String)
+    #: ``+`` and ``*`` read as ``MS63+``, with no space.
+    attach_without_space: Mapped[bool] = mapped_column(Integer, nullable=False, default=0)
     normalised_delta: Mapped[float] = mapped_column(nullable=False, default=0.0)
     colour: Mapped[str | None] = mapped_column(String)
     notes: Mapped[str | None] = mapped_column(Text)
 
+    @property
+    def short(self) -> str:
+        """What a column should show."""
+        return self.abbreviation or self.label
+
 
 class SpecimenGradeModifier(Base):
+    """One modifier on one grade.
+
+    Has its own key because a certification can point at a particular instance: a CAC sticker
+    is recorded as issued by CAC's certification, not as an anonymous property of the grade.
+    """
+
     __tablename__ = "specimen_grade_modifier"
     __table_args__ = (
+        Index("ux_sgm", "specimen_grade_id", "grade_modifier_id", unique=True),
         Index("ix_sgm_mod", "grade_modifier_id"),
-        {"sqlite_with_rowid": False},
+        Index("ix_sgm_cert", "certification_id"),
     )
 
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
     specimen_grade_id: Mapped[int] = mapped_column(
-        ForeignKey("specimen_grade.id", ondelete="CASCADE"), primary_key=True
+        ForeignKey("specimen_grade.id", ondelete="CASCADE"), nullable=False
     )
     grade_modifier_id: Mapped[int] = mapped_column(
-        ForeignKey("grade_modifier.id", ondelete="RESTRICT"), primary_key=True
+        ForeignKey("grade_modifier.id", ondelete="RESTRICT"), nullable=False
     )
+    #: What this one says: ``Harshly Cleaned``, ``Gold``, ``Full Bands``, ``Brown``.
+    detail: Mapped[str | None] = mapped_column(String)
+    certification_id: Mapped[int | None] = mapped_column(
+        ForeignKey("certification.id", ondelete="SET NULL")
+    )
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    modifier: Mapped[GradeModifier] = relationship()
+    grade: Mapped[SpecimenGrade] = relationship(back_populates="modifier_links")
+    certification: Mapped[Certification | None] = relationship(back_populates="sticker_links")
 
 
 class SpecimenGrade(UuidMixin, TimestampMixin, Base):
@@ -551,14 +575,8 @@ class SpecimenGrade(UuidMixin, TimestampMixin, Base):
     __tablename__ = "specimen_grade"
     __table_args__ = (
         _in("source", C.GRADE_SOURCES),
-        Index(
-            "ux_grade_primary",
-            "specimen_id",
-            unique=True,
-            sqlite_where=text("is_primary = 1"),
-        ),
         Index("ix_grade_norm", "normalised"),
-        Index("ix_grade_spec", "specimen_id"),
+        Index("ix_grade_spec", "specimen_id", "rank"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -571,22 +589,37 @@ class SpecimenGrade(UuidMixin, TimestampMixin, Base):
     grade_level_id: Mapped[int | None] = mapped_column(
         ForeignKey("grade_level.id", ondelete="SET NULL")
     )
-    #: Exactly as entered, e.g. ``MS63 CAC green``.
+    #: What the user typed for the grade itself, e.g. ``MS63``.
+    grade_label: Mapped[str] = mapped_column(String, nullable=False, default="")
+    #: What that grade counts as on its own, e.g. 63.
+    base_value: Mapped[float | None] = mapped_column()
+    #: Rendered display including modifiers, cached for the grid.
     raw_text: Mapped[str] = mapped_column(String, nullable=False)
+    #: ``base_value`` plus every modifier's delta. Sorting compares this.
     normalised: Mapped[float | None] = mapped_column()
     detail_note: Mapped[str | None] = mapped_column(String)
     source: Mapped[str] = mapped_column(String, nullable=False, default="self")
     assigned_by: Mapped[str | None] = mapped_column(String)
+    hide_assigned_by: Mapped[bool] = mapped_column(Integer, nullable=False, default=0)
     assigned_on: Mapped[date | None] = mapped_column(DateIso)
-    is_primary: Mapped[bool] = mapped_column(Integer, nullable=False, default=0)
+    #: 1 is the grade shown in a single-value column; 2, 3 … sit behind it.
+    rank: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     notes: Mapped[str | None] = mapped_column(Text)
 
     specimen: Mapped[Specimen] = relationship(back_populates="grades")
     scale: Mapped[GradeScale | None] = relationship()
     level: Mapped[GradeLevel | None] = relationship()
-    modifiers: Mapped[list[GradeModifier]] = relationship(
-        secondary="specimen_grade_modifier", order_by="GradeModifier.kind"
+    #: The modifier instances, each with its own detail and issuing certification.
+    modifier_links: Mapped[list[SpecimenGradeModifier]] = relationship(
+        cascade="all, delete-orphan",
+        order_by="SpecimenGradeModifier.sort_order",
+        back_populates="grade",
     )
+
+    @property
+    def modifiers(self) -> list[GradeModifier]:
+        """The modifier definitions, in display order."""
+        return [link.modifier for link in self.modifier_links]
 
 
 # ---------------------------------------------------------------------------
@@ -620,13 +653,7 @@ class Certification(UuidMixin, TimestampMixin, Base):
     __tablename__ = "certification"
     __table_args__ = (
         _in("status", C.CERTIFICATION_STATUSES),
-        Index(
-            "ux_cert_primary",
-            "specimen_id",
-            unique=True,
-            sqlite_where=text("is_primary = 1"),
-        ),
-        Index("ix_cert_spec", "specimen_id", "status"),
+        Index("ix_cert_spec", "specimen_id", "status", "rank"),
         Index("ix_cert_number", "grading_company_id", "cert_number"),
     )
 
@@ -649,7 +676,7 @@ class Certification(UuidMixin, TimestampMixin, Base):
     supersedes_id: Mapped[int | None] = mapped_column(
         ForeignKey("certification.id", ondelete="SET NULL")
     )
-    is_primary: Mapped[bool] = mapped_column(Integer, nullable=False, default=0)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     population_note: Mapped[str | None] = mapped_column(String)
     verification_url: Mapped[str | None] = mapped_column(String)
     verified_at: Mapped[datetime | None] = mapped_column(UtcIso)
@@ -658,6 +685,10 @@ class Certification(UuidMixin, TimestampMixin, Base):
     specimen: Mapped[Specimen] = relationship(back_populates="certifications")
     company: Mapped[GradingCompany] = relationship()
     grade: Mapped[SpecimenGrade | None] = relationship()
+    #: Sticker instances this certification issued, e.g. CAC's green sticker.
+    sticker_links: Mapped[list[SpecimenGradeModifier]] = relationship(
+        back_populates="certification"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -671,7 +702,7 @@ class ExternalLink(UuidMixin, TimestampMixin, Base):
     __tablename__ = "external_link"
     __table_args__ = (
         _in("kind", C.LINK_KINDS),
-        Index("ix_link_spec", "specimen_id", "sort_order"),
+        Index("ix_link_spec", "specimen_id", "rank", "sort_order"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -684,6 +715,7 @@ class ExternalLink(UuidMixin, TimestampMixin, Base):
     reference: Mapped[str | None] = mapped_column(String)
     notes: Mapped[str | None] = mapped_column(Text)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     specimen: Mapped[Specimen] = relationship(back_populates="links")
 

@@ -56,6 +56,8 @@ class SheetView(QTableView):
         self.verticalHeader().setVisible(False)
 
         self.move_requested_action: QAction | None = None
+        #: Set by the window: reveals the panel for the row under the cursor.
+        self.details_action: QAction | None = None
         self._build_actions()
 
     def setModel(self, model: object) -> None:
@@ -203,6 +205,9 @@ class SheetView(QTableView):
                     sort_action.setText("Confirm or change sort value…")
                 menu.addSeparator()
 
+        if index.isValid() and self.details_action is not None:
+            menu.addAction(self.details_action)
+            menu.addSeparator()
         if self.move_requested_action is not None:
             menu.addAction(self.move_requested_action)
             menu.addSeparator()

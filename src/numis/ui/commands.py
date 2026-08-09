@@ -20,10 +20,32 @@ from ..models import FieldDefinition, Specimen, Subcollection
 from ..services import CollectionService
 
 
+def readable(error: Exception) -> str:
+    """Turn a database error into something worth reading."""
+    text = str(getattr(error, "orig", error))
+    if "UNIQUE constraint failed" in text:
+        return "That is already recorded on this coin."
+    return text.splitlines()[0]
+
+
 class _Command(QUndoCommand):
     def __init__(self, service: CollectionService, text: str) -> None:
         super().__init__(text)
         self.service = service
+        #: Set when the work failed. Pushing a command onto the stack calls it through Qt's
+        #: C++ layer, which a Python exception cannot cross — it would be printed and lost,
+        #: leaving the session broken and every later operation failing. So each command
+        #: catches its own failure, rolls back, and leaves the reason here for the caller.
+        self.error: str | None = None
+
+    def guarded(self, work: Callable[[], object]) -> bool:
+        try:
+            work()
+            return True
+        except Exception as exc:  # noqa: BLE001 - the point is to catch everything
+            self.session.rollback()
+            self.error = readable(exc)
+            return False
 
     @property
     def session(self):  # noqa: ANN201
@@ -57,6 +79,9 @@ class SetValues(_Command):
         self._previous_names: dict[int, tuple[str, int]] = {}
 
     def redo(self) -> None:
+        self.guarded(self._redo)
+
+    def _redo(self) -> None:
         first_time = not self._previous
         touched: set[int] = set()
         for specimen_id, field_id, raw in self.edits:
@@ -164,6 +189,9 @@ class SetInventoryCode(_Command):
         self._released_code: str | None = None
 
     def redo(self) -> None:
+        self.guarded(self._redo)
+
+    def _redo(self) -> None:
         specimen = self._specimen(self.specimen_id)
         self._previous = specimen.inventory_code
         released = self.service.set_inventory_code(
@@ -314,10 +342,13 @@ class AddChildRow(_Command):
         self._row_id: int | None = None
 
     def redo(self) -> None:
-        row = self._build(self.service)
-        self._model = type(row)
-        self._row_id = row.id
-        self.session.commit()
+        def work() -> None:
+            row = self._build(self.service)
+            self._model = type(row)
+            self._row_id = row.id
+            self.session.commit()
+
+        self.guarded(work)
 
     def undo(self) -> None:
         if self._model is None or self._row_id is None:  # pragma: no cover
@@ -338,16 +369,28 @@ class DeleteChildRow(_Command):
         self.model = model
         self.row_id = row_id
         self._columns: dict[str, Any] = {}
-        self._modifier_ids: list[int] = []
+        self._modifier_links: list[dict[str, Any]] = []
 
     def redo(self) -> None:
+        self.guarded(self._redo)
+
+    def _redo(self) -> None:
         row = self.session.get(self.model, self.row_id)
         if row is None:  # pragma: no cover
             return
         self._columns = _snapshot(row)
-        # A grade's modifiers live in a join table, so they have to be remembered separately.
-        if hasattr(row, "modifiers"):
-            self._modifier_ids = [modifier.id for modifier in row.modifiers]
+        # A grade's modifiers live in a join table, and each instance carries its own detail
+        # and issuing certification, so the whole link has to be remembered.
+        if hasattr(row, "modifier_links"):
+            self._modifier_links = [
+                {
+                    "grade_modifier_id": link.grade_modifier_id,
+                    "detail": link.detail,
+                    "certification_id": link.certification_id,
+                    "sort_order": link.sort_order,
+                }
+                for link in row.modifier_links
+            ]
         self.session.delete(row)
         self.session.commit()
 
@@ -355,15 +398,13 @@ class DeleteChildRow(_Command):
         row = self.model(**self._columns)
         self.session.add(row)
         self.session.flush()
-        if self._modifier_ids:
+        if self._modifier_links:
             from ..models import SpecimenGradeModifier
 
-            for modifier_id in self._modifier_ids:
-                self.session.add(
-                    SpecimenGradeModifier(
-                        specimen_grade_id=row.id, grade_modifier_id=modifier_id
-                    )
-                )
+            for link in self._modifier_links:
+                self.session.add(SpecimenGradeModifier(specimen_grade_id=row.id, **link))
+            self.session.flush()
+            self.service.refresh_grade_text(row)
         self.session.commit()
 
 
