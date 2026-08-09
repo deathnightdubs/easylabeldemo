@@ -128,6 +128,11 @@ CREATE TABLE specimen (
   uuid             TEXT NOT NULL UNIQUE,
   subcollection_id INTEGER NOT NULL REFERENCES subcollection(id) ON DELETE RESTRICT,
   display_name     TEXT NOT NULL DEFAULT '',
+  -- Whether the name was typed by hand. An automatic name is re-rendered from the
+  -- subcollection's naming template whenever the values behind it change; a name the user
+  -- wrote is never touched. Without this the two are indistinguishable, and the choice is
+  -- between stale names and overwriting the user's own.
+  display_name_manual INTEGER NOT NULL DEFAULT 0,
   inventory_code   TEXT NULL,
   status           TEXT NOT NULL DEFAULT 'owned' CHECK (status IN
                      ('owned','ordered','sold','traded','gifted','lost','stolen',

@@ -23,8 +23,9 @@ separate front and back offsets for badly punched 2×2 holders.
 ## How your collection is organised
 
 **Every coin has an ID.** A plain number, assigned automatically, which you can change to anything
-you like as long as no other coin uses it. Numbers of coins you have deleted stay reserved, so an ID
-in an old note or on a printed label never comes to mean a different coin.
+you like as long as no other coin is using it. If the number you want belongs to a coin sitting in
+the Trash, the program asks first and then lets you have it — and if you later restore that coin it
+is given a new number, because its data matters more than its number does.
 
 **One row is one coin.** That is the whole model. There is no hidden "coin type" concept behind the
 scenes, no catalogue of things-that-exist that your coins have to be attached to. If you own three of
@@ -176,6 +177,18 @@ labelled and categorised.
 
 ---
 
+## Coins you no longer own
+
+Selling a coin should not mean losing it from your records. Marking one as **sold** keeps
+everything — its values, photographs, catalogue numbers, grades and history — and simply stops
+listing it among what you own.
+
+*View → Show sold and disposed* brings them back into the grid, in italics so they are obviously
+different from the rest. The same applies to coins traded, given away, lost or stolen.
+
+This is deliberately separate from the **Trash**, which is for mistakes. A sold coin is not a
+mistake; it is part of your collection's history.
+
 ## Buying, selling and history
 
 Every coin has a history log: bought, sold, valued, sent for grading, moved, and so on. Each entry can
@@ -195,6 +208,20 @@ Sold coins stay in the database forever with their full story, just filtered out
 current-holdings view.
 
 ---
+
+## Catalogue numbers, grades, certifications and links
+
+These four do not fit in a single cell, because a coin can have several of each. They live in a
+panel beside the grid, showing whichever coin you have selected, with Add and Remove for each.
+
+The grid can also show them as columns, giving a one-line summary — the main catalogue number, the
+grade you marked, the current certification, how many links there are. Add those columns through
+*Columns… → Add built-in list*.
+
+Since the program ships with no catalogues, grading companies or grading scales, every one of those
+dialogs can create what it needs as you go. Adding your first catalogue number will offer to define
+the catalogue; adding your first grade will offer to define the scale and where each grade sits on
+it. A blank slate should be a clean start, not a dead end.
 
 ## "As easy as Excel to edit" — the interface
 

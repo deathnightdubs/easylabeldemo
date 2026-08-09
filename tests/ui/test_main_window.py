@@ -13,8 +13,8 @@ from numis.db import create_library
 from numis.services import CollectionService
 from numis.ui.main_window import MASTER_VIEW, MainWindow
 
-#: The fixture shows two fields after the three identity columns (ID, Name, Subcollection).
-HEAD_COLUMN, DATE_COLUMN = 3, 4
+#: The fixture shows two fields after the identity columns (ID, Name, Subcollection, Status).
+HEAD_COLUMN, DATE_COLUMN = 4, 5
 
 
 @pytest.fixture

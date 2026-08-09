@@ -12,8 +12,8 @@ DISPLAY = Qt.ItemDataRole.DisplayRole
 CLEAR = QItemSelectionModel.SelectionFlag.ClearAndSelect
 
 #: Column positions in the fixture. The first three are the identity columns.
-ID, NAME, SUBCOLLECTION = 0, 1, 2
-RULER, DENOM, DATE, WEIGHT = 3, 4, 5, 6
+ID, NAME, SUBCOLLECTION, STATUS = 0, 1, 2, 3
+RULER, DENOM, DATE, WEIGHT = 4, 5, 6, 7
 
 
 def add_rows(model, count: int):
@@ -44,6 +44,7 @@ class TestGrid:
             "ID",
             "Name",
             "Subcollection",
+            "Status",
             "Ruler",
             "Denomination",
             "Date",
@@ -54,7 +55,7 @@ class TestGrid:
         """ID, Name and Subcollection are all editable, like any other column."""
         model, _ = sheet
         add_rows(model, 1)
-        for section in (ID, NAME, SUBCOLLECTION):
+        for section in (ID, NAME, SUBCOLLECTION, STATUS):
             assert model.flags(model.index(0, section)) & Qt.ItemFlag.ItemIsEditable
 
     def test_every_row_gets_an_id_without_being_asked(self, sheet):

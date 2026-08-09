@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -46,6 +47,15 @@ OFFERED_TYPES = (
     "boolean",
     "long_text",
 )
+
+
+#: The special systems, and how they read in the interface.
+SPECIAL_BLOCKS = {
+    "catalogues": "Catalogue numbers",
+    "grades": "Grades",
+    "certifications": "Certifications",
+    "links": "Links",
+}
 
 
 def _slug(label: str) -> str:
@@ -170,18 +180,24 @@ class ManageFieldsDialog(QDialog):
         explanation.setStyleSheet("color: #555;")
 
         add = QPushButton("Add column…")
+        add_special = QPushButton("Add built-in list…")
+        add_special.setToolTip(
+            "Catalogue numbers, grades, certifications and links. These hold several entries "
+            "per coin, so the grid shows a summary and the panel beside it does the editing."
+        )
         up = QPushButton("Move up")
         down = QPushButton("Move down")
         remove = QPushButton("Remove from subcollection")
         delete = QPushButton("Delete column…")
         add.clicked.connect(self._add)
+        add_special.clicked.connect(self._add_special)
         up.clicked.connect(lambda: self._move(-1))
         down.clicked.connect(lambda: self._move(1))
         remove.clicked.connect(self._remove)
         delete.clicked.connect(self._delete)
 
         buttons = QHBoxLayout()
-        for widget in (add, up, down, remove, delete):
+        for widget in (add, add_special, up, down, remove, delete):
             buttons.addWidget(widget)
         buttons.addStretch()
 
@@ -208,10 +224,7 @@ class ManageFieldsDialog(QDialog):
         return list(
             self.service.session.scalars(
                 select(SubcollectionBlock)
-                .where(
-                    SubcollectionBlock.subcollection_id == self.subcollection.id,
-                    SubcollectionBlock.block_kind == "field",
-                )
+                .where(SubcollectionBlock.subcollection_id == self.subcollection.id)
                 .order_by(SubcollectionBlock.sort_order, SubcollectionBlock.id)
             )
         )
@@ -222,9 +235,17 @@ class ManageFieldsDialog(QDialog):
         self.table.setRowCount(len(blocks))
         for row, block in enumerate(blocks):
             field = block.field
-            label = QTableWidgetItem(block.display_label or field.label)
+            if field is not None:
+                shown_label = block.display_label or field.label
+                type_name = get_field_type(field.data_type).label
+            else:
+                shown_label = block.display_label or SPECIAL_BLOCKS.get(
+                    block.block_kind, block.block_kind
+                )
+                type_name = "built-in list"
+            label = QTableWidgetItem(shown_label)
             label.setData(Qt.ItemDataRole.UserRole, block.id)
-            type_item = QTableWidgetItem(get_field_type(field.data_type).label)
+            type_item = QTableWidgetItem(type_name)
             type_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             shown = QTableWidgetItem()
             shown.setFlags(
@@ -255,6 +276,32 @@ class ManageFieldsDialog(QDialog):
             self.service.session.commit()
             self._reload()
 
+    def _add_special(self) -> None:
+        existing = {block.block_kind for block in self._blocks() if block.field is None}
+        available = [
+            (label, kind) for kind, label in SPECIAL_BLOCKS.items() if kind not in existing
+        ]
+        if not available:
+            QMessageBox.information(
+                self, "Add built-in list", "All of them are already shown here."
+            )
+            return
+        names = [label for label, _ in available]
+        choice, accepted = QInputDialog.getItem(
+            self, "Add built-in list", "Which one?", names, 0, False
+        )
+        if not accepted or not choice:
+            return
+        kind = dict((label, kind) for label, kind in available)[choice]
+        self.service.show_special_block(
+            self.subcollection,
+            kind,
+            sort_order=len(self._blocks()),
+            show_in_table=True,
+        )
+        self.service.session.commit()
+        self._reload()
+
     def _rename(self, item: QTableWidgetItem) -> None:
         if item.column() == 0:
             block = self._blocks()[item.row()]
@@ -284,6 +331,21 @@ class ManageFieldsDialog(QDialog):
         if block is None:
             return
         field = block.field
+        if field is None:
+            label = block.display_label or SPECIAL_BLOCKS.get(block.block_kind, "list")
+            confirmed = QMessageBox.question(
+                self,
+                "Remove from subcollection",
+                f"Stop showing “{label}” in {self.subcollection.name}?\n\n"
+                "Nothing is deleted: the entries stay on every coin and remain editable in the "
+                "panel beside the grid.",
+                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            )
+            if confirmed == QMessageBox.StandardButton.Ok:
+                self.service.session.delete(block)
+                self.service.session.commit()
+                self._reload()
+            return
         count = self.service.count_values(field)
         confirmed = QMessageBox.question(
             self,
@@ -303,6 +365,14 @@ class ManageFieldsDialog(QDialog):
         if block is None:
             return
         field = block.field
+        if field is None:
+            QMessageBox.information(
+                self,
+                "Delete column",
+                "Built-in lists cannot be deleted, only hidden. Use “Remove from "
+                "subcollection”.",
+            )
+            return
         count = self.service.count_values(field)
         confirmed = QMessageBox.question(
             self,

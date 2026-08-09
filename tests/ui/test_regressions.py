@@ -282,3 +282,80 @@ class TestChangingSubcollection:
         finally:
             window.session.close()
             library.close()
+
+
+class TestNamesFromTemplate:
+    """A name should appear once the values it is built from are filled in."""
+
+    def _window(self, qapp, tmp_path):
+        from numis.services import CollectionService
+
+        library = create_library(tmp_path / "Naming.numis")
+        window = MainWindow(library)
+        service: CollectionService = window.service
+        modern = service.create_subcollection("Modern", naming_template="{ruler} {denom}")
+        for order, key in enumerate(("ruler", "denom")):
+            field = service.create_field(key, key.title(), "text")
+            service.show_field(modern, field, show_in_table=True, sort_order=order)
+        window.session.commit()
+        window._reload_subcollections(keep="Modern")
+        return window, library
+
+    def test_filling_values_after_adding_a_row_produces_a_name(self, qapp, tmp_path):
+        window, library = self._window(qapp, tmp_path)
+        try:
+            model = window.model
+            window._add_rows(1)
+            assert model.data(model.index(0, 1), DISPLAY) == ""
+
+            model.setData(model.index(0, 4), "Victoria", EDIT)
+            model.setData(model.index(0, 5), "1 Crown", EDIT)
+            assert model.data(model.index(0, 1), DISPLAY) == "Victoria 1 Crown"
+        finally:
+            window.session.close()
+            library.close()
+
+    def test_a_name_typed_by_hand_is_never_overwritten(self, qapp, tmp_path):
+        window, library = self._window(qapp, tmp_path)
+        try:
+            model = window.model
+            window._add_rows(1)
+            model.setData(model.index(0, 1), "My favourite", EDIT)
+            model.setData(model.index(0, 4), "Victoria", EDIT)
+            assert model.data(model.index(0, 1), DISPLAY) == "My favourite"
+        finally:
+            window.session.close()
+            library.close()
+
+    def test_undoing_the_value_restores_the_previous_name(self, qapp, tmp_path):
+        window, library = self._window(qapp, tmp_path)
+        try:
+            model = window.model
+            window._add_rows(1)
+            model.setData(model.index(0, 4), "Victoria", EDIT)
+            assert model.data(model.index(0, 1), DISPLAY) == "Victoria"
+
+            window.undo.undo()
+            assert model.data(model.index(0, 1), DISPLAY) == ""
+        finally:
+            window.session.close()
+            library.close()
+
+    def test_clearing_the_name_returns_it_to_the_template(self, qapp, tmp_path):
+        """So a hand-written name is never a one-way door."""
+        window, library = self._window(qapp, tmp_path)
+        try:
+            model = window.model
+            window._add_rows(1)
+            model.setData(model.index(0, 4), "Victoria", EDIT)
+            model.setData(model.index(0, 1), "My favourite", EDIT)
+            assert model.data(model.index(0, 1), DISPLAY) == "My favourite"
+
+            model.setData(model.index(0, 1), "", EDIT)
+            assert model.data(model.index(0, 1), DISPLAY) == "Victoria"
+
+            model.setData(model.index(0, 5), "1 Crown", EDIT)
+            assert model.data(model.index(0, 1), DISPLAY) == "Victoria 1 Crown"
+        finally:
+            window.session.close()
+            library.close()

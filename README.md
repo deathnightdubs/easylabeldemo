@@ -48,6 +48,15 @@ Managing columns, and adding one.
 
 ![Columns](docs/images/07-columns.png) ![New column](docs/images/08-new-column.png)
 
+Catalogue numbers, grades, certifications and links are edited in the panel beside the grid, which
+follows the selected coin. The grid shows a one-line summary of each.
+
+![Details panel](docs/images/09-details-panel.png)
+
+A coin marked as sold keeps everything and is listed in italics only when you ask for it.
+
+![Sold coins](docs/images/10-sold.png)
+
 Screenshots are generated headlessly by `tools/screenshots.py`, so they can be regenerated
 rather than going stale.
 
@@ -60,9 +69,8 @@ libraries are disposable.
 
 Not yet built: search and filtering beyond full text (document 03), import/export and Numista
 (04), wishlists (05), labels driven from the database (06), virtual albums and photographs (07).
-The interface also does not yet edit the special systems — catalogue numbers, grades,
-certifications and links exist in the core and are reachable from the CLI, but have no editors in
-the grid yet.
+The history ledger has no editor yet: purchase and sale prices can be recorded through the core and
+the CLI, but not from the interface.
 
 Database migrations are deferred: while the schema is unstable and no real data exists, Alembic
 would only add ceremony. It arrives before the first release.
@@ -86,6 +94,8 @@ would only add ceremony. It arrives before the first release.
 | Search, including CJK | `通寶` matches inside `乾隆通寶` |
 | Edit the ID, Name and Subcollection columns | Typing another subcollection's name moves the coin |
 | Move several coins at once | **Move to…** on the toolbar, or the cell context menu |
+| Mark coins as sold | Kept with their history, hidden until *View → Show sold and disposed* |
+| Edit catalogue numbers, grades, certifications and links | In the panel beside the grid, for the selected coin |
 
 Rejected edits explain themselves in the status bar and never enter the undo history: entering
 `5 stone` in a weight column reports *unknown mass unit 'stone'* and leaves the cell alone.

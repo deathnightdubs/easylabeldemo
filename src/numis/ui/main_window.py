@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence, QUndoStack
 from PySide6.QtWidgets import (
     QComboBox,
@@ -20,10 +21,12 @@ from PySide6.QtWidgets import (
 )
 from sqlalchemy import select
 
+from ..constants import DISPOSED_STATUSES
 from ..db import Library, create_library, open_library
 from ..models import Subcollection
 from ..services import CollectionService
-from .commands import AddSpecimens, DeleteSpecimens, MoveSpecimens, SetSortValue
+from .commands import AddSpecimens, DeleteSpecimens, MoveSpecimens, SetSortValue, SetStatus
+from .detail_panel import DetailPanel
 from .fields_dialog import ManageFieldsDialog, NewFieldDialog
 from .sheet_view import SheetView
 from .table_model import SpecimenTableModel
@@ -38,6 +41,7 @@ class MainWindow(QMainWindow):
         self.session = library.session_factory()
         self.service = CollectionService(self.session)
         self.undo = QUndoStack(self)
+        self._selected_id: int | None = None
 
         self.setWindowTitle(f"Collection — {library.path.name}")
         self.resize(1180, 620)
@@ -75,6 +79,17 @@ class MainWindow(QMainWindow):
         self.view.status.connect(lambda text: self.statusBar().showMessage(text, 4000))
         self.setCentralWidget(self.view)
 
+        self.detail = DetailPanel(self.service, self)
+        self.detail.run_command = self._run_command
+        self.detail.changed.connect(self.model.refresh)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.detail)
+        self.view.selectionModel().selectionChanged.connect(self._selection_changed)
+        # Reloading the grid resets the model, which clears the selection. Without carrying it
+        # across, the details panel emptied itself every time anything was edited.
+        self.model.modelAboutToBeReset.connect(self._remember_selection)
+        self.model.modelReset.connect(self._restore_selection)
+        self.model.confirm_reuse = self._confirm_id_reuse
+
         self.subcollection_combo.currentIndexChanged.connect(self._subcollection_changed)
 
         self._build_toolbar()
@@ -101,6 +116,14 @@ class MainWindow(QMainWindow):
         self.add_many_action = QAction("Add many…", self)
         self.add_many_action.triggered.connect(self._add_many)
         bar.addAction(self.add_many_action)
+
+        self.sold_action = QAction("Mark as sold", self)
+        self.sold_action.setToolTip(
+            "Keeps the coin and its history, but hides it from the collection unless "
+            "'Show sold and disposed' is on"
+        )
+        self.sold_action.triggered.connect(lambda: self._set_status("sold"))
+        bar.addAction(self.sold_action)
 
         self.move_action = QAction("Move to…", self)
         self.move_action.setToolTip("Move the selected coins to another subcollection")
@@ -171,16 +194,34 @@ class MainWindow(QMainWindow):
             edit_menu.addAction(action)
 
         view_menu = self.menuBar().addMenu("&View")
+        self.disposed_action = QAction("Show sold and disposed", self)
+        self.disposed_action.setCheckable(True)
+        self.disposed_action.setToolTip(
+            "Coins you have sold, traded, given away or lost stay in the collection with their "
+            "history. This lists them alongside what you still own."
+        )
+        self.disposed_action.toggled.connect(self._toggle_disposed)
+        view_menu.addAction(self.disposed_action)
+
         self.trash_action = QAction("Show Trash", self)
         self.trash_action.setCheckable(True)
         self.trash_action.toggled.connect(self.model.set_show_trash)
         view_menu.addAction(self.trash_action)
+
+        panel_action = self.detail.toggleViewAction()
+        panel_action.setText("Show the selected coin's details")
+        view_menu.addSeparator()
+        view_menu.addAction(panel_action)
         review_action = QAction("Go to next unconfirmed sort value", self)
         review_action.triggered.connect(self._go_to_review)
         view_menu.addAction(review_action)
 
         collection_menu = self.menuBar().addMenu("&Collection")
         collection_menu.addAction(self.move_action)
+        collection_menu.addAction(self.sold_action)
+        owned_action = QAction("Mark as owned", self)
+        owned_action.triggered.connect(lambda: self._set_status("owned"))
+        collection_menu.addAction(owned_action)
         collection_menu.addSeparator()
         new_sub = QAction("New subcollection…", self)
         new_sub.triggered.connect(self._new_subcollection)
@@ -227,6 +268,40 @@ class MainWindow(QMainWindow):
 
     def _after_undo(self, _index: int) -> None:
         self.model.refresh()
+        self.detail.refresh()
+
+    def _run_command(self, command: object) -> None:
+        """Push a command from the detail panel onto the shared undo stack."""
+        self.undo.push(command)
+
+    def _selection_changed(self, *_args: object) -> None:
+        rows = sorted({index.row() for index in self.view.selectedIndexes()})
+        specimen = self.model.specimen_at(rows[0]) if rows else None
+        self.detail.show_specimen(specimen)
+
+    def _remember_selection(self) -> None:
+        rows = sorted({index.row() for index in self.view.selectedIndexes()})
+        self._selected_id = self.model.specimen_at(rows[0]).id if rows else None
+
+    def _restore_selection(self) -> None:
+        identifier = getattr(self, "_selected_id", None)
+        row = self.model.row_of(identifier) if identifier is not None else None
+        if row is not None:
+            self.view.selectRow(row)
+        else:
+            self._selection_changed()
+
+    def _confirm_id_reuse(self, code: str, owner: object) -> bool:
+        """Ask before taking an identifier from a coin in the Trash."""
+        answer = QMessageBox.question(
+            self,
+            "Reuse this ID?",
+            f"ID {code!r} belongs to “{owner.display_name or 'an unnamed coin'}”, which is in "
+            "the Trash.\n\n"
+            "Reuse it? If that coin is ever restored it will be given a new ID.",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+        )
+        return answer == QMessageBox.StandardButton.Ok
 
     def current_subcollection(self) -> Subcollection | None:
         identifier = self.subcollection_combo.currentData()
@@ -279,6 +354,30 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Moved {len(specimen_ids)} row(s) to the Trash — nothing is deleted permanently",
             6000,
+        )
+
+    def _toggle_disposed(self, show: bool) -> None:
+        self.model.set_show_disposed(show)
+        self.statusBar().showMessage(
+            "Showing coins that have left the collection, in italics"
+            if show
+            else "Hiding coins you no longer own",
+            5000,
+        )
+
+    def _set_status(self, status: str) -> None:
+        """Mark the selected coins, keeping every record they hold."""
+        rows = sorted({index.row() for index in self.view.selectedIndexes()})
+        if not rows:
+            self.statusBar().showMessage("Select the coins first", 4000)
+            return
+        specimen_ids = [self.model.specimen_at(row).id for row in rows]
+        self.undo.push(SetStatus(self.service, specimen_ids, status))
+        self.model.refresh()
+        hidden = status in DISPOSED_STATUSES and not self.model.show_disposed
+        note = " — hidden now; View > Show sold and disposed brings them back" if hidden else ""
+        self.statusBar().showMessage(
+            f"Marked {len(specimen_ids)} coin(s) as {status}{note}", 8000
         )
 
     def move_to_subcollection(self, subcollection: Subcollection) -> None:
@@ -387,6 +486,8 @@ class MainWindow(QMainWindow):
         self.service = CollectionService(self.session)
         self.undo.clear()
         self.model.service = self.service
+        self.detail.service = self.service
+        self.detail.show_specimen(None)
         self.setWindowTitle(f"Collection — {library.path.name}")
         self._reload_subcollections(keep=MASTER_VIEW)
 

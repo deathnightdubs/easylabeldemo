@@ -232,6 +232,8 @@ class Specimen(UuidMixin, TimestampMixin, Base):
         ForeignKey("subcollection.id", ondelete="RESTRICT"), nullable=False
     )
     display_name: Mapped[str] = mapped_column(String, nullable=False, default="")
+    #: Whether the name was typed by hand. Automatic names follow the naming template.
+    display_name_manual: Mapped[bool] = mapped_column(Integer, nullable=False, default=0)
     inventory_code: Mapped[str | None] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, nullable=False, default="owned")
     is_favourite: Mapped[bool] = mapped_column(Integer, nullable=False, default=0)

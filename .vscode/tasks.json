@@ -2,29 +2,91 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "Run the collection manager",
+      "type": "shell",
+      "command": "${command:python.interpreterPath}",
+      "args": [
+        "-m",
+        "numis.ui"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "Create sample library (Demo.numis)",
+      "type": "shell",
+      "command": "${command:python.interpreterPath}",
+      "args": [
+        "-m",
+        "numis",
+        "demo",
+        "${workspaceFolder}/Demo.numis"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
       "label": "Install dependencies (run once, or when they change)",
       "type": "shell",
       "command": "${command:python.interpreterPath}",
-      "args": ["-m", "pip", "install", "-e", ".[dev]"],
+      "args": [
+        "-m",
+        "pip",
+        "install",
+        "-e",
+        ".[dev]"
+      ],
       "problemMatcher": [],
-      "presentation": { "reveal": "always", "panel": "shared" }
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
     },
     {
       "label": "Run tests",
       "type": "shell",
       "command": "${command:python.interpreterPath}",
-      "args": ["-m", "pytest"],
-      "group": { "kind": "test", "isDefault": true },
+      "args": [
+        "-m",
+        "pytest"
+      ],
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
       "problemMatcher": [],
-      "presentation": { "reveal": "always", "panel": "shared" }
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
     },
     {
       "label": "Lint",
       "type": "shell",
       "command": "${command:python.interpreterPath}",
-      "args": ["-m", "ruff", "check", "src", "tests", "tools"],
+      "args": [
+        "-m",
+        "ruff",
+        "check",
+        "src",
+        "tests",
+        "tools"
+      ],
       "problemMatcher": [],
-      "presentation": { "reveal": "always", "panel": "shared" }
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
     }
   ]
 }
