@@ -109,6 +109,54 @@ Rejected edits explain themselves in the status bar and never enter the undo his
 - Bulk add and bulk edit
 - Full-text search that works for two-character CJK terms and folds diacritics
 
+## Setting up on Windows with VS Code
+
+Do this **once**. After that, updating is one command and there is nothing to reinstall.
+
+Use `git clone`, not the *Download ZIP* button: a downloaded ZIP is a new folder every time, so
+the libraries you installed into the previous one are gone and you end up installing repeatedly.
+
+In PowerShell:
+
+```powershell
+git clone https://github.com/deathnightdubs/easylabeldemo.git
+cd easylabeldemo
+py -3.12 -m venv .venv
+.venv\Scripts\pip install -e ".[dev]"
+```
+
+Then open the folder in VS Code (`code .`) and pick the interpreter: **Ctrl+Shift+P** →
+*Python: Select Interpreter* → the one inside `.venv`. VS Code usually finds it on its own and
+remembers it for the folder.
+
+Press **F5** and choose *Run: collection manager*. There is also *Create Demo.numis (sample data)*
+if you want something to click on straight away — a brand new library is deliberately empty.
+
+### Updating later
+
+```powershell
+git pull
+```
+
+That is all. The install is an *editable* one, meaning it points at the source folder rather than
+copying it, so new code takes effect immediately. Only re-run the `pip install` line if the
+dependencies in `pyproject.toml` change — and re-running it is harmless either way.
+
+To try a branch that has not been merged yet:
+
+```powershell
+git fetch origin
+git switch fix/grid-functionality
+```
+
+`git switch main` returns you to the main line.
+
+### If `py -3.12` is not found
+
+Check what you have with `py --list`. Any Python 3.11 or newer works — substitute it, for example
+`py -3.13 -m venv .venv`. If the `py` launcher is missing entirely, install Python from
+python.org and tick *Add python.exe to PATH*.
+
 ## Development
 
 ```bash
@@ -117,6 +165,9 @@ python3.12 -m venv .venv
 .venv/bin/pytest
 .venv/bin/ruff check src tests
 ```
+
+VS Code tasks are provided for the same things: **Ctrl+Shift+P** → *Tasks: Run Task* →
+*Run tests*, *Lint*, or *Install dependencies*.
 
 Run the interface:
 
