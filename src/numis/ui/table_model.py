@@ -22,6 +22,7 @@ from PySide6.QtGui import QBrush, QColor, QFont, QUndoStack
 
 from ..constants import DISPOSED_STATUSES, SPECIMEN_STATUSES
 from ..errors import NumisError
+from ..filters import NO_FILTER, FilterGroup, SortKey, add_sort_key, describe_sort
 from ..models import FieldDefinition, Specimen, Subcollection
 from ..services import CollectionService, Column
 from .commands import SetDisplayName, SetInventoryCode, SetStatus, SetValues, validate
@@ -35,6 +36,16 @@ FIXED_KEYS = ("__id__", "__name__", "__subcollection__", "__status__")
 #: dialog. The queue in the status bar is how the user finds them later.
 REVIEW_BACKGROUND = QColor(255, 249, 219)
 DELETED_FOREGROUND = QColor(150, 150, 150)
+
+
+def sort_target(column: Column) -> str:
+    """The filter/sort target naming a grid column.
+
+    Columns are identified by key within a subcollection, but a sort has to be storable in a
+    saved view and comparable across subcollections, so a field becomes ``field:<key>`` and a
+    special system is named by its kind.
+    """
+    return f"field:{column.key}" if column.kind == "field" else column.kind
 
 
 class SpecimenTableModel(QAbstractTableModel):
@@ -63,17 +74,22 @@ class SpecimenTableModel(QAbstractTableModel):
         self._fields: list[FieldDefinition] = []
         self._grid: dict[tuple[int, int], str] = {}
         self._flagged: set[tuple[int, int]] = set()
-        self._sort_key: str | None = None
-        self._sort_order = Qt.SortOrder.AscendingOrder
+        self._sort: tuple[SortKey, ...] = ()
+        self.filters: FilterGroup = NO_FILTER
         #: Set by the window: asked before an identifier held by a deleted coin is reused.
         self.confirm_reuse: Callable[[str, Specimen], bool] | None = None
 
     # -- loading ----------------------------------------------------------
 
     @property
+    def sort_keys(self) -> tuple[SortKey, ...]:
+        """How the grid is ordered, most significant first. Empty means creation order."""
+        return self._sort
+
+    @property
     def sort_key(self) -> str | None:
-        """Which column the grid is sorted by, or ``None`` for creation order."""
-        return self._sort_key
+        """The primary sort target, or ``None`` for creation order."""
+        return self._sort[0].target if self._sort else None
 
     def set_subcollection(self, subcollection: Subcollection | None) -> None:
         """``None`` means the master view: every subcollection merged."""
@@ -82,6 +98,14 @@ class SpecimenTableModel(QAbstractTableModel):
 
     def set_search(self, term: str) -> None:
         self.search_term = term.strip()
+        self.refresh()
+
+    def set_filters(self, filters: FilterGroup | None) -> None:
+        self.filters = filters or NO_FILTER
+        self.refresh()
+
+    def set_sort_keys(self, keys: Sequence[SortKey]) -> None:
+        self._sort = tuple(keys)
         self.refresh()
 
     def set_show_trash(self, show: bool) -> None:
@@ -110,10 +134,11 @@ class SpecimenTableModel(QAbstractTableModel):
             if field is not None
         ]
 
-        # A remembered sort only survives if its column is still present here.
-        available = set(FIXED_KEYS) | {column.key for column in columns}
-        if self._sort_key is not None and self._sort_key not in available:
-            self._sort_key = None
+        # A remembered sort only survives while its columns are still present here.
+        available = self._available_targets(columns)
+        kept = tuple(key for key in self._sort if key.target in available)
+        if kept != self._sort:
+            self._sort = kept
             self.sort_cleared.emit()
 
         specimens = self._load_specimens(columns)
@@ -126,48 +151,51 @@ class SpecimenTableModel(QAbstractTableModel):
         self.endResetModel()
         self.contents_changed.emit()
 
+    def _available_targets(self, columns: Sequence[Column]) -> set[str]:
+        """The sort targets the columns on screen can offer."""
+        targets = set(FIXED_KEYS)
+        for column in columns:
+            targets.add(sort_target(column))
+        return targets
+
+    def _catalogue_choices(self, columns: Sequence[Column]) -> dict[str, str]:
+        """Which catalogue a catalogue column should sort by, when it shows only one."""
+        choices: dict[str, str] = {}
+        for column in columns:
+            if (
+                column.kind == "catalogues"
+                and column.display.mode == "only"
+                and column.display.only
+            ):
+                choices["catalogues"] = column.display.only
+        return choices
+
     def _load_specimens(self, columns: Sequence[Column]) -> list[Specimen]:
-        if self.search_term:
-            found = self.service.search(self.search_term, subcollection=self.subcollection)
-            return [
-                s
-                for s in found
-                if (self.show_trash or s.deleted_at is None)
-                and (self.show_disposed or s.status not in DISPOSED_STATUSES)
-            ]
+        """One query for filtering, searching and sorting together.
 
-        descending = self._sort_order == Qt.SortOrder.DescendingOrder
-
-        if self._sort_key is not None and self._sort_key not in FIXED_KEYS:
-            matching = [column for column in columns if column.key == self._sort_key]
-            if matching and matching[0].kind == "field":
-                try:
-                    return self.service.sorted_by_field(
-                        self._sort_key,
-                        subcollection=self.subcollection,
-                        descending=descending,
-                        include_deleted=self.show_trash,
-                        include_disposed=self.show_disposed,
-                    )
-                except NumisError as exc:  # a field type that cannot be sorted
-                    self.error.emit(str(exc))
-
-        query = self.service.live_specimens(
-            self.subcollection,
-            include_deleted=self.show_trash,
-            include_disposed=self.show_disposed,
-        ).order_by(Specimen.id)
-        specimens = list(self.service.session.scalars(query))
-
-        if self._sort_key == "__id__":
-            specimens.sort(key=_code_sort_key, reverse=descending)
-        elif self._sort_key == "__name__":
-            specimens.sort(key=lambda s: (s.display_name or "").lower(), reverse=descending)
-        elif self._sort_key == "__subcollection__":
-            specimens.sort(key=lambda s: self._subcollection_name(s).lower(), reverse=descending)
-        elif self._sort_key == "__status__":
-            specimens.sort(key=lambda s: s.status, reverse=descending)
-        return specimens
+        These used to be three separate paths, and a search silently discarded the sort while a
+        sorted column silently ignored the filter.
+        """
+        try:
+            return self.service.query_specimens(
+                self.subcollection,
+                filters=self.filters,
+                sort=self._sort,
+                term=self.search_term,
+                include_deleted=self.show_trash,
+                include_disposed=self.show_disposed,
+                catalogues=self._catalogue_choices(columns),
+            )
+        except NumisError as exc:
+            # A filter or sort that cannot be carried out must not empty the grid without
+            # explanation, so the request is reported and the unsorted list still shown.
+            self.error.emit(str(exc))
+            return self.service.query_specimens(
+                self.subcollection,
+                term=self.search_term,
+                include_deleted=self.show_trash,
+                include_disposed=self.show_disposed,
+            )
 
     def _subcollection_name(self, specimen: Specimen) -> str:
         subcollection = self.service.session.get(Subcollection, specimen.subcollection_id)
@@ -376,12 +404,56 @@ class SpecimenTableModel(QAbstractTableModel):
         self.refresh()
         return True
 
-    def sort(self, column: int, order: Qt.SortOrder = Qt.SortOrder.AscendingOrder) -> None:
-        self._sort_key = self.key_at(column)
-        self._sort_order = order
+    def sort(
+        self,
+        column: int,
+        order: Qt.SortOrder = Qt.SortOrder.AscendingOrder,
+        *,
+        additional: bool = False,
+    ) -> None:
+        """Sort by a column, or add it as a tie-breaker behind the keys already chosen."""
+        target = self.target_at(column)
+        if target is None:
+            return
+        self._sort = add_sort_key(
+            self._sort,
+            target,
+            descending=order == Qt.SortOrder.DescendingOrder,
+            additional=additional,
+        )
         self.refresh()
 
     # -- helpers used by the view ----------------------------------------
+
+    def target_at(self, section: int) -> str | None:
+        """The sort/filter target for a column position."""
+        if section < len(FIXED_COLUMNS):
+            return FIXED_KEYS[section]
+        column = self.column_at(section)
+        return sort_target(column) if column is not None else None
+
+    def section_of(self, target: str) -> int | None:
+        """Where a sort target currently sits, so the view can mark the right header."""
+        if target in FIXED_KEYS:
+            return FIXED_KEYS.index(target)
+        for offset, column in enumerate(self._columns):
+            if sort_target(column) == target:
+                return offset + len(FIXED_COLUMNS)
+        return None
+
+    def sort_summary(self) -> str:
+        """How the grid is ordered, in words."""
+        labels = {FIXED_KEYS[index]: FIXED_COLUMNS[index] for index in range(len(FIXED_KEYS))}
+        for column in self._columns:
+            labels[sort_target(column)] = column.label
+        return describe_sort(self._sort, labels)
+
+    def column_labels(self) -> dict[str, str]:
+        """Every sortable/filterable target on screen, with the label the user sees."""
+        labels = {FIXED_KEYS[index]: FIXED_COLUMNS[index] for index in range(len(FIXED_KEYS))}
+        for column in self._columns:
+            labels[sort_target(column)] = column.label
+        return labels
 
     def key_at(self, section: int) -> str | None:
         """A stable identifier for a column position, used to remember sorting."""
@@ -484,11 +556,4 @@ class SpecimenTableModel(QAbstractTableModel):
         ]
 
 
-def _code_sort_key(specimen: Specimen) -> tuple[int, float, str]:
-    """Order identifiers numerically where possible, and put blanks last."""
-    code = specimen.inventory_code or ""
-    if not code:
-        return (2, 0.0, "")
-    if code.isdigit():
-        return (0, float(code), "")
-    return (1, 0.0, code.lower())
+

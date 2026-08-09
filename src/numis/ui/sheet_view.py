@@ -40,12 +40,18 @@ class SheetView(QTableView):
             | QAbstractItemView.EditTrigger.AnyKeyPressed
         )
         self.setAlternatingRowColors(True)
-        self.setSortingEnabled(True)
+        # Sorting is handled here rather than by Qt's own click handling, because Qt gives the
+        # model no way to know whether Ctrl was held — and that is the difference between
+        # "sort by this" and "then by this".
+        self.setSortingEnabled(False)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
         header = self.horizontalHeader()
         header.setSectionsMovable(True)
+        header.setSortIndicatorShown(True)
+        header.setSectionsClickable(True)
+        header.sectionClicked.connect(self._header_clicked)
         # Interactive sizing on purpose: automatic resize-to-contents is the usual cause of
         # sluggish scrolling on large tables, because it measures every row.
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
@@ -74,6 +80,46 @@ class SheetView(QTableView):
     def clear_sort_indicator(self) -> None:
         """Stop claiming a sort that no longer applies to the columns on screen."""
         self.horizontalHeader().setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
+
+    def _header_clicked(self, section: int) -> None:
+        """Sort by a column; Ctrl-click adds it behind the keys already chosen."""
+        model = self.sheet_model()
+        if model is None:
+            return
+        target = model.target_at(section)
+        if target is None:
+            return
+
+        existing = {key.target: key for key in model.sort_keys}
+        previous = existing.get(target)
+        order = (
+            Qt.SortOrder.DescendingOrder
+            if previous is not None and not previous.descending
+            else Qt.SortOrder.AscendingOrder
+        )
+        additional = bool(
+            QGuiApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier
+        )
+        model.sort(section, order, additional=additional)
+        self.refresh_sort_indicator()
+
+    def refresh_sort_indicator(self) -> None:
+        """Point the indicator at whichever column leads the sort."""
+        model = self.sheet_model()
+        if model is None:
+            return
+        keys = model.sort_keys
+        if not keys:
+            self.clear_sort_indicator()
+            return
+        section = model.section_of(keys[0].target)
+        if section is None:
+            self.clear_sort_indicator()
+            return
+        self.horizontalHeader().setSortIndicator(
+            section,
+            Qt.SortOrder.DescendingOrder if keys[0].descending else Qt.SortOrder.AscendingOrder,
+        )
 
     def _fit_columns(self) -> None:
         """Size columns to their contents, but only for tables small enough for it to be
