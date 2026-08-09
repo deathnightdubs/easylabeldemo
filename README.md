@@ -60,8 +60,10 @@ A coin marked as sold keeps everything and is listed in italics only when you as
 
 Each of those four columns decides for itself how much to show: all of the entries, only the ones
 from one place — only Numista, only Hartill, only PCGS — or only the one you ranked first. A grade
-column additionally chooses whether to spell out modifiers, and whether to name the scale, the
-source and who assigned it.
+column additionally chooses between short forms and full names, whether to add what each modifier
+says on that particular coin, and whether to name the scale, the source and who assigned it — so one
+grade can read `MS Details FB RD`, `MS Details — Harshly Cleaned FB RD`, or
+`MS Details — Harshly Cleaned Full Bands Red`.
 
 ![Column settings](docs/images/11-column-settings.png)
 
@@ -83,7 +85,7 @@ rather than going stale.
 
 Documents 01 (core data model), 02 (fields and special systems) and the filtering, sorting and
 saved-view parts of 03 are **implemented and tested**, and the **spreadsheet-style interface** is
-built on top of them: 677 tests, schema verified equivalent to the normative SQL. Nothing is
+built on top of them: 740 tests, schema verified equivalent to the normative SQL. Nothing is
 released and the schema is not yet stable — test libraries are disposable.
 
 Not yet built: import/export and Numista (04), wishlists (05), labels driven from the database
@@ -115,6 +117,9 @@ shipping a change without one locks people out of their own collection.
 | Save a filter and sort as a view | *View → Saved views*; they survive reopening the library |
 | Reorder, hide and resize columns | Right-click a header |
 | Choose what a grade or catalogue column shows | Right-click its header → **Column settings** |
+| Short forms or full names for modifiers | `MS63 FB RD` or `MS63 Full Bands Red` |
+| Record what a modifier says on *one* coin | One `Details` modifier covers *Harshly Cleaned*, *Holed*, anything |
+| Choose the order modifiers append in | **Move up** / **Move down** in *Collection → Grade modifiers* |
 | Add one row or many | 47 identical coins become 47 rows you can then edit together |
 | Delete to a Trash | Recoverable; nothing is destroyed silently |
 | Right-click a cell → set its sort value | For dates and text the app could not read |

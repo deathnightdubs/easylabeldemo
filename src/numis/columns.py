@@ -68,8 +68,12 @@ class ColumnDisplay:
 
     # -- how much of a grade ----------------------------------------------
     show_modifiers: bool = True
-    #: ``CAC Gold`` rather than ``CAC``; ``Details — Harshly Cleaned`` rather than ``Details``.
+    #: Add what each modifier says *on this coin*: ``Details — Harshly Cleaned``, ``CAC Gold``.
     modifier_details: bool = False
+    #: ``Full Bands`` rather than ``FB``, ``Red`` rather than ``RD``.
+    modifier_full_names: bool = False
+    #: Name the sticker's company when the modifier's own name does not already.
+    sticker_issuer: bool = False
     show_scale: bool = False
     show_source: bool = False
     show_assigned_by: bool = False
@@ -93,6 +97,8 @@ class ColumnDisplay:
         return grading.GradeDisplay(
             modifiers=self.show_modifiers,
             modifier_details=self.modifier_details,
+            modifier_full_names=self.modifier_full_names,
+            sticker_issuer=self.sticker_issuer,
             scale=self.show_scale,
             source=self.show_source,
             assigned_by=self.show_assigned_by,
@@ -139,6 +145,8 @@ class ColumnDisplay:
         for flag in (
             "show_modifiers",
             "modifier_details",
+            "modifier_full_names",
+            "sticker_issuer",
             "show_scale",
             "show_source",
             "show_assigned_by",

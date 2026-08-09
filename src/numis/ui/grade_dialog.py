@@ -81,11 +81,25 @@ class GradeDialog(QDialog):
         )
 
         self.modifiers = QTableWidget(0, 2)
-        self.modifiers.setHorizontalHeaderLabels(["Modifier", "What it says"])
+        self.modifiers.setHorizontalHeaderLabels(["Modifier", "What it says on this coin"])
         self.modifiers.horizontalHeader().setStretchLastSection(True)
         self.modifiers.setColumnWidth(0, 260)
-        self.modifiers.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.modifiers.setMaximumHeight(150)
+        # Single selection rather than none: NoSelection also prevents the second column from
+        # being edited, which silently made the per-coin detail impossible to type.
+        self.modifiers.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.modifiers.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
+        self.modifiers.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.SelectedClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+            | QAbstractItemView.EditTrigger.AnyKeyPressed
+        )
+        self.modifiers.setMaximumHeight(170)
+        self.modifiers.setToolTip(
+            "Tick a modifier, then type what it says on this coin in the second column: "
+            "Harshly Cleaned, Gold, Full Bands.\n\n"
+            "The modifier itself is shared between coins; what you type here is not."
+        )
 
         new_modifier = QPushButton("New modifier…")
         manage = QPushButton("Manage modifiers…")
@@ -103,6 +117,11 @@ class GradeDialog(QDialog):
         )
         self.preview = QLabel("—")
         self.preview.setStyleSheet("color: #444;")
+        self.preview.setWordWrap(True)
+        self.preview.setToolTip(
+            "How this grade can read. Which of these a column shows is set on the column "
+            "itself: right-click its header, then Column settings."
+        )
 
         self.source = QComboBox()
         self.source.addItems(GRADE_SOURCES)
@@ -122,7 +141,7 @@ class GradeDialog(QDialog):
         form.addRow("Modifiers", self.modifiers)
         form.addRow("", modifier_buttons)
         form.addRow("Calculated value", self.calculated)
-        form.addRow("Reads as", self.preview)
+        form.addRow("Can read as", self.preview)
         form.addRow("Source", self.source)
         form.addRow("Assigned by", self.assigned_by)
         form.addRow("", self.hide_assigned_by)
@@ -163,13 +182,43 @@ class GradeDialog(QDialog):
                 self.scale.setCurrentIndex(index)
 
     def _reload_modifiers(self) -> None:
+        """List the modifiers, with the ones already on this coin first.
+
+        The definitions are shared across the library, so the list is the same everywhere; what
+        makes it about *this* coin is which are ticked and what the second column says. Putting
+        the coin's own at the top keeps that visible as the library's list grows.
+        """
         checked = self.checked_modifiers()
+        if not checked and self.grade is not None:
+            # Opened to edit an existing grade: the table has not been filled in yet, so its own
+            # modifiers have to come from the grade or they cannot be sorted to the top.
+            checked = {
+                link.modifier.code: (link.detail or "")
+                for link in self.grade.modifier_links
+                if link.modifier is not None
+            }
         self.modifiers.blockSignals(True)
-        available = self.service.modifiers()
+        # The coin's own first, in the order they read, so this list and the preview agree;
+        # everything else behind them, grouped by kind.
+        reading = {
+            modifier.code: position
+            for position, modifier in enumerate(self.service.modifiers_in_reading_order())
+        }
+        available = sorted(
+            self.service.modifiers(),
+            key=lambda m: (
+                m.code not in checked,
+                reading.get(m.code, 0) if m.code in checked else 0,
+                m.kind,
+                m.label,
+            ),
+        )
         self.modifiers.setRowCount(len(available))
         for row, modifier in enumerate(available):
+            reads = modifier.reads_as()
+            spelled = f" · {modifier.label}" if modifier.label != reads else ""
             name = QTableWidgetItem(
-                f"{modifier.label}  ({modifier.kind}, {modifier.normalised_delta:+g})"
+                f"{reads}{spelled}  ({modifier.kind}, {modifier.normalised_delta:+g})"
             )
             name.setFlags(
                 Qt.ItemFlag.ItemIsEnabled
@@ -182,7 +231,9 @@ class GradeDialog(QDialog):
             )
             name.setData(Qt.ItemDataRole.UserRole, modifier.code)
             detail = QTableWidgetItem(previous or "")
-            detail.setToolTip(DETAIL_PROMPT.get(modifier.kind, ""))
+            detail.setToolTip(
+                f"What this coin's {reads} says: {DETAIL_PROMPT.get(modifier.kind, 'optional')}"
+            )
             self.modifiers.setItem(row, 0, name)
             self.modifiers.setItem(row, 1, detail)
         self.modifiers.blockSignals(False)
@@ -225,16 +276,27 @@ class GradeDialog(QDialog):
         total = grading.calculated_value(self.base_value.value(), modifiers)
         self.calculated.setText("—" if total is None else f"{total:g}")
 
-        pieces = self.label.text().strip()
-        for modifier in modifiers:
-            detail = chosen.get(modifier.code) or ""
-            piece = modifier.issuer or modifier.short if modifier.kind == "sticker" else (
-                modifier.label if modifier.kind == "detail" else modifier.short
-            )
-            if detail:
-                piece = f"{piece} {detail}" if modifier.kind != "detail" else f"{piece} — {detail}"
-            pieces = pieces + piece if modifier.attach_without_space else f"{pieces} {piece}"
-        self.preview.setText(pieces or "—")
+        # Rendered by the same code the columns use, so the preview cannot drift from them.
+        label = self.label.text().strip()
+        pairs = [(modifier, chosen.get(modifier.code) or None) for modifier in modifiers]
+        compact = grading.assemble(label, pairs)
+        spelled = grading.assemble(
+            label, pairs, grading.GradeDisplay(modifier_details=True)
+        )
+        full = grading.assemble(
+            label,
+            pairs,
+            grading.GradeDisplay(
+                modifier_details=True, modifier_full_names=True, sticker_issuer=True
+            ),
+        )
+        # All three, because which one a column shows is that column's setting, and seeing only
+        # one of them is how "spell out what each modifier says" came to look like it did nothing.
+        readings = [compact]
+        for reading in (spelled, full):
+            if reading not in readings:
+                readings.append(reading)
+        self.preview.setText("\n".join(readings) if label or pairs else "—")
 
     def _new_modifier(self) -> None:
         dialog = ModifierDialog(self.service, None, self)

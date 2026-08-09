@@ -29,7 +29,9 @@ def window(qapp, tmp_path):
     krause = service.create_catalog("KM", "Krause")
     hartill = service.create_catalog("H", "Hartill")
     scale = service.create_grade_scale("SHELDON", "Sheldon 1-70", kind="numeric")
-    service.create_grade_modifier("CAC", "CAC sticker", "sticker", 0.15, issuer="CAC")
+    service.create_grade_modifier(
+        "CAC", "CAC sticker", "sticker", 0.15, abbreviation="CAC", issuer="CAC"
+    )
 
     coin = service.add_specimen(modern, display_name="Cash coin")
     service.add_reference(coin, krause, "1866", rank=1)

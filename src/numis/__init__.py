@@ -8,7 +8,7 @@ Package name ``numis`` is a placeholder until the product is named.
 
 __version__ = "0.1.0.dev0"
 
-SCHEMA_VERSION = "0003"
+SCHEMA_VERSION = "0004"
 """Current schema revision.
 
 **Bump this and add a migration in ``numis.migrations`` for every schema change.**

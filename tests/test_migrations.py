@@ -59,8 +59,8 @@ class TestMigrationCatalogue:
         assert pending(SCHEMA_VERSION) == []
 
     def test_pending_lists_what_an_old_library_needs(self):
-        assert [m.version for m in pending("0001")] == ["0002", "0003"]
-        assert [m.version for m in pending("0002")] == ["0003"]
+        assert [m.version for m in pending("0001")] == ["0002", "0003", "0004"]
+        assert [m.version for m in pending("0003")] == ["0004"]
 
     def test_every_migration_explains_itself(self):
         for migration in MIGRATIONS:

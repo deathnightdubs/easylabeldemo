@@ -523,13 +523,29 @@ class GradeModifier(UuidMixin, TimestampMixin, Base):
     #: ``+`` and ``*`` read as ``MS63+``, with no space.
     attach_without_space: Mapped[bool] = mapped_column(Integer, nullable=False, default=0)
     normalised_delta: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    #: Where this one appears among a grade's modifiers. Belongs to the definition rather than
+    #: to a coin, so two coins carrying the same modifiers can never read them differently.
+    #: 0 means "wherever its kind falls"; 1 and up are placed ahead of that.
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     colour: Mapped[str | None] = mapped_column(String)
     notes: Mapped[str | None] = mapped_column(Text)
 
     @property
     def short(self) -> str:
-        """What a column should show."""
+        """What a column shows by default: the short form, falling back to the full name."""
         return self.abbreviation or self.label
+
+    def reads_as(self, *, full_name: bool = False, with_issuer: bool = False) -> str:
+        """The modifier's own name, before anything a particular coin adds to it.
+
+        A sticker's issuer is *not* part of this by default. Recording that CAC issued a sticker
+        is worth doing, but a column showing only ``CAC`` when the user named the modifier
+        ``CAC Gold`` throws away the part they chose to type.
+        """
+        text = self.label if full_name else self.short
+        if with_issuer and self.issuer and not text.lower().startswith(self.issuer.lower()):
+            return f"{self.issuer} {text}"
+        return text
 
 
 class SpecimenGradeModifier(Base):

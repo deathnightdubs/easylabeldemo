@@ -224,7 +224,9 @@ class TestStickersAreCertificationsInTheirOwnRight:
 
     def _coin_with_a_stickered_grade(self, window):
         service, detail = window.service, window.detail
-        service.create_grade_modifier("CAC", "CAC sticker", "sticker", 0.5, issuer="CAC")
+        service.create_grade_modifier(
+            "CAC", "CAC sticker", "sticker", 0.5, abbreviation="CAC", issuer="CAC"
+        )
         grade = service.add_grade(
             detail.specimen, None, "MS63", base_value=63.0,
             modifiers=[("CAC", "Gold")], assigned_by="PCGS",

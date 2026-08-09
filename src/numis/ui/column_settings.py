@@ -166,7 +166,9 @@ class ColumnSettingsDialog(QDialog):
     def _extras_group(self, display: ColumnDisplay) -> QGroupBox | None:
         """The part that differs by system: a grade has modifiers, a link has a label."""
         self.show_modifiers = QCheckBox("Modifiers")
-        self.modifier_details = QCheckBox("Spell out what each modifier says")
+        self.modifier_details = QCheckBox("Add what each one says on this coin")
+        self.modifier_full_names = QCheckBox("Full names, not short forms")
+        self.sticker_issuer = QCheckBox("Name the sticker's company")
         self.show_scale = QCheckBox("Scale")
         self.show_source = QCheckBox("Source")
         self.show_assigned_by = QCheckBox("Who assigned it")
@@ -176,6 +178,8 @@ class ColumnSettingsDialog(QDialog):
         for widget, value in (
             (self.show_modifiers, display.show_modifiers),
             (self.modifier_details, display.modifier_details),
+            (self.modifier_full_names, display.modifier_full_names),
+            (self.sticker_issuer, display.sticker_issuer),
             (self.show_scale, display.show_scale),
             (self.show_source, display.show_source),
             (self.show_assigned_by, display.show_assigned_by),
@@ -184,7 +188,16 @@ class ColumnSettingsDialog(QDialog):
         ):
             widget.setChecked(bool(value))
 
-        self.modifier_details.setToolTip("CAC Gold rather than CAC; Details — Harshly Cleaned.")
+        self.modifier_details.setToolTip(
+            "What a particular coin adds to a modifier, typed in the grade's own window:\n"
+            "Details — Harshly Cleaned, CAC Gold, Full Bands.\n\n"
+            "Coins that record nothing extra are unaffected."
+        )
+        self.modifier_full_names.setToolTip("Full Bands rather than FB; Red rather than RD.")
+        self.sticker_issuer.setToolTip(
+            "Puts the company in front — CAC Gold — unless the modifier's own name already "
+            "starts with it."
+        )
         self.show_assigned_by.setToolTip(
             "Individual grades can opt out of this in their own settings, so recording that a "
             "dealer graded a hundred coins need not put their name on a hundred rows."
@@ -195,15 +208,20 @@ class ColumnSettingsDialog(QDialog):
             box = QGroupBox("How much of each grade")
             inner = QVBoxLayout(box)
             inner.addWidget(self.show_modifiers)
-            indented = QHBoxLayout()
-            indented.addSpacing(22)
-            indented.addWidget(self.modifier_details)
-            inner.addLayout(indented)
+            for dependent in (
+                self.modifier_full_names,
+                self.modifier_details,
+                self.sticker_issuer,
+            ):
+                indented = QHBoxLayout()
+                indented.addSpacing(22)
+                indented.addWidget(dependent)
+                inner.addLayout(indented)
+                self.show_modifiers.toggled.connect(dependent.setEnabled)
+                dependent.setEnabled(self.show_modifiers.isChecked())
             inner.addWidget(self.show_scale)
             inner.addWidget(self.show_source)
             inner.addWidget(self.show_assigned_by)
-            self.show_modifiers.toggled.connect(self.modifier_details.setEnabled)
-            self.modifier_details.setEnabled(self.show_modifiers.isChecked())
             return box
 
         if self.kind == "catalogues":
@@ -264,6 +282,8 @@ class ColumnSettingsDialog(QDialog):
             self.separator,
             self.show_modifiers,
             self.modifier_details,
+            self.modifier_full_names,
+            self.sticker_issuer,
             self.show_scale,
             self.show_source,
             self.show_assigned_by,
@@ -330,6 +350,8 @@ class ColumnSettingsDialog(QDialog):
             separator=self.separator.text() or " · ",
             show_modifiers=self.show_modifiers.isChecked(),
             modifier_details=self.modifier_details.isChecked(),
+            modifier_full_names=self.modifier_full_names.isChecked(),
+            sticker_issuer=self.sticker_issuer.isChecked(),
             show_scale=self.show_scale.isChecked(),
             show_source=self.show_source.isChecked(),
             show_assigned_by=self.show_assigned_by.isChecked(),
