@@ -13,6 +13,7 @@ The released label tool lives in a separate repository. This one is for building
 
 | Path | Contents |
 |---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | **How the code is actually built** — read this first if you are going to work on it |
 | [`docs/design/`](docs/design/) | Design specifications. Start with [`OVERVIEW.md`](docs/design/OVERVIEW.md) for plain English, or [`README.md`](docs/design/README.md) for the document index |
 | [`docs/design/schema/base-v1.sql`](docs/design/schema/base-v1.sql) | The normative base schema |
 | `src/numis/` | The core library. Imports no GUI toolkit, so it is testable and reusable |
