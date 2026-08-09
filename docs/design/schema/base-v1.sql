@@ -345,6 +345,10 @@ CREATE TABLE grade_modifier (
   -- '+' and a star read as MS63+ and MS63*, with no space before them.
   attach_without_space INTEGER NOT NULL DEFAULT 0,
   normalised_delta REAL NOT NULL DEFAULT 0,   -- keeps 'AU Details' beside 'AU'
+  -- Where this modifier appears among a grade's modifiers. On the definition rather than on
+  -- the coin, so two coins with the same modifiers can never read them differently.
+  -- 0 means 'wherever its kind falls'; 1 and up are placed ahead of that.
+  display_order    INTEGER NOT NULL DEFAULT 0,
   colour           TEXT NULL,
   notes            TEXT NULL,
   created_at       TEXT NOT NULL,

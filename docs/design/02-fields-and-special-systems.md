@@ -231,8 +231,8 @@ Four tables:
 - **`grade_scale`** — a standard the user defines: Sheldon 1–70, adjectival, Chinese 1–10, anything.
 - **`grade_level`** — the ordered values within a scale, each with a `normalised` position on one
   shared numeric axis, plus `aliases` so `MS-63`, `MS 63` and `Mint State 63` all resolve.
-- **`grade_modifier`** — `Details`, `+`, `star`, CAC green, CAC gold, each with a
-  `normalised_delta`.
+- **`grade_modifier`** — `Details`, `+`, `star`, `Full Bands`, `Red`, a CAC sticker, each with a
+  `normalised_delta`. See 4.2.1 for how one reads.
 - **`specimen_grade`** — a grade on a coin: scale, level, `raw_text` exactly as entered, the computed
   `normalised`, an optional `detail_note`, and `source` (`self`, `seller`, `tpg`, `auction`, `other`)
   with `assigned_by`.
@@ -259,6 +259,41 @@ lands between MS62 and MS63, and *AU Details* immediately below *AU* — sorted 
 grade rather than banished to the bottom or treated as an unrelated string. Stickers nudge upward
 within the same grade. *"At least VF"* is one numeric predicate that works across Sheldon,
 adjectival and Chinese scales at once. *"Exclude problem coins"* filters on modifier kind.
+
+#### 4.2.1 How a modifier reads
+
+Two things are kept deliberately separate, and conflating them was a real bug.
+
+**The modifier's own name belongs to its definition and is shared.** It carries a full name
+(`Full Bands`) and a short form (`FB`); a column chooses between them. A sticker also records the
+company that issues it, but the company does **not** replace the name: a modifier the user chose to
+call `CAC Gold` reads as `CAC Gold`. Substituting the issuer meant a column showed only `CAC`, which
+throws away the part the user typed. The company can be shown explicitly, and is not repeated when
+the name already begins with it.
+
+**What a particular coin says about it is recorded against that coin**, on
+`specimen_grade_modifier.detail`: `Harshly Cleaned`, `Gold`, `Green`. This is what stops the user
+defining a separate global modifier for every problem a coin might have — one `Details` definition
+covers all of them, and the arithmetic stays on the definition where it belongs.
+
+So one grade with `Details` (saying *Harshly Cleaned*), `FB` and `RD` can read as any of:
+
+| Column settings | Reads |
+|---|---|
+| default | `MS Details FB RD` |
+| \+ what each one says | `MS Details — Harshly Cleaned FB RD` |
+| \+ full names | `MS Details — Harshly Cleaned Full Bands Red` |
+
+A problem uses a dash — `Details — Harshly Cleaned` — because `Details Harshly Cleaned` reads like
+the name of a grade rather than a grade and its explanation. Everything else uses a space. If the
+detail is already contained in the modifier's name, it is not said twice: a modifier called
+`CAC Gold` on a coin whose sticker says `Gold` still reads `CAC Gold`.
+
+**The order modifiers append in is the user's choice**, held in `grade_modifier.display_order` and
+changed by moving one up or down in the modifier list. It lives on the definition rather than on any
+coin *on purpose*: two coins carrying the same modifiers must never read them differently. Anything
+left at 0 falls back to the order its kind implies — qualifier, strike, colour, contrast, sticker,
+detail — which is the order a slab reads in.
 
 **The detail can be shown either way**, also as you asked. Column descriptors:
 

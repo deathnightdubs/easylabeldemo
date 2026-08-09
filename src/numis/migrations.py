@@ -285,6 +285,21 @@ def _grades_are_typed(connection: Connection) -> None:
         connection.execute(text(statement))
 
 
+def _modifier_display_order(connection: Connection) -> None:
+    """Let the user choose the order modifiers append in.
+
+    A plain column addition, so no table rebuild. Everything defaults to 0, which means
+    "wherever its kind falls" — exactly the order libraries already read in.
+    """
+    if not has_column(connection, "grade_modifier", "display_order"):
+        connection.execute(
+            text(
+                "ALTER TABLE grade_modifier "
+                "ADD COLUMN display_order INTEGER NOT NULL DEFAULT 0"
+            )
+        )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version="0002",
@@ -295,6 +310,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version="0003",
         description="grades are typed rather than chosen from a list; rank replaces is_primary",
         apply=_grades_are_typed,
+    ),
+    Migration(
+        version="0004",
+        description="the order modifiers append in is the user's choice",
+        apply=_modifier_display_order,
     ),
 )
 
