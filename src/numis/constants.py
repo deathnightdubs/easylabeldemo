@@ -66,7 +66,15 @@ CATALOG_CERTAINTIES = ("certain", "probable", "cf", "disputed")
 
 GRADE_SCALE_KINDS = ("numeric", "ordinal")
 
-GRADE_MODIFIER_KINDS = ("detail", "sticker", "qualifier", "strike")
+#: The kinds of thing that attach to a grade, from what the grading companies actually issue.
+GRADE_MODIFIER_KINDS = (
+    "detail",     # a problem: cleaned, holed, environmental damage
+    "sticker",    # a separate endorsement: CAC, CACG, WINGS, CNAS
+    "qualifier",  # a plus or a star, which attach with no space
+    "strike",     # full bands, full steps, full head
+    "colour",     # red, brown, red-brown on copper
+    "contrast",   # cameo, deep cameo, prooflike
+)
 
 GRADE_SOURCES = ("self", "seller", "tpg", "auction", "other")
 

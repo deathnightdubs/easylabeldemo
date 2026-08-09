@@ -119,9 +119,33 @@ class Library:
             return []
 
         self.backup(f"pre-{SCHEMA_VERSION}")
-        for migration in outstanding:
-            with self.engine.begin() as connection:
-                migration.apply(connection)
+
+        # Rebuilding a table means dropping one other tables point at, which SQLite refuses
+        # while foreign keys are enforced. Its documented procedure is to disable them for the
+        # duration, which can only be done outside a transaction, then check the result before
+        # committing. Hence the explicit BEGIN rather than engine.begin().
+        connection = self.engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+        try:
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            connection.exec_driver_sql("BEGIN")
+            try:
+                for migration in outstanding:
+                    migration.apply(connection)
+                broken = connection.exec_driver_sql("PRAGMA foreign_key_check").fetchall()
+                if broken:
+                    raise LibraryError(
+                        f"migration left {len(broken)} broken reference(s); "
+                        "the database was left untouched and a backup is in backups/"
+                    )
+                connection.exec_driver_sql("COMMIT")
+            except Exception:
+                connection.exec_driver_sql("ROLLBACK")
+                raise
+            finally:
+                connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+        finally:
+            connection.close()
+
         with self.session() as session:
             self.meta(session).schema_version = SCHEMA_VERSION
         return outstanding

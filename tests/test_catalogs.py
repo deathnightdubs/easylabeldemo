@@ -102,14 +102,18 @@ class TestReferences:
             svc.add_reference(coin, km, "2073")
             session.flush()
 
-    def test_only_one_primary_reference_per_coin(self, svc, modern):
+    def test_references_queue_in_order_of_precedence(self, svc, modern):
+        """Rank decides which one a single-value column shows; the user reorders them."""
         km = svc.create_catalog("KM", "Krause")
         hartill = svc.create_catalog("H", "Hartill")
         coin = svc.add_specimen(modern)
-        first = svc.add_reference(coin, km, "2073", is_primary=True)
-        second = svc.add_reference(coin, hartill, "22.123", is_primary=True)
-        assert first.is_primary == 0
-        assert second.is_primary == 1
+        first = svc.add_reference(coin, km, "2073")
+        second = svc.add_reference(coin, hartill, "22.123")
+        assert (first.rank, second.rank) == (1, 2)
+        assert svc.primary_reference(coin) is first
+
+        svc.reorder([second, first])
+        assert svc.primary_reference(coin) is second
 
     def test_sorting_by_a_catalogue_puts_coins_without_a_number_last(self, svc, modern):
         """The answered decision: blanks go to the bottom, in both directions."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -26,8 +27,9 @@ from ..db import Library, create_library, open_library
 from ..models import Subcollection
 from ..services import CollectionService
 from .commands import AddSpecimens, DeleteSpecimens, MoveSpecimens, SetSortValue, SetStatus
-from .detail_panel import DetailPanel
+from .detail_panel import DetailPanel, _readable
 from .fields_dialog import ManageFieldsDialog, NewFieldDialog
+from .modifier_dialogs import ManageModifiersDialog
 from .sheet_view import SheetView
 from .table_model import SpecimenTableModel
 
@@ -82,6 +84,13 @@ class MainWindow(QMainWindow):
         self.detail = DetailPanel(self.service, self)
         self.detail.run_command = self._run_command
         self.detail.changed.connect(self.model.refresh)
+        self.detail.failed.connect(
+            lambda message: QMessageBox.warning(
+                self,
+                "Could not save that",
+                f"{message}\n\nNothing else was changed.",
+            )
+        )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.detail)
         self.view.selectionModel().selectionChanged.connect(self._selection_changed)
         # Reloading the grid resets the model, which clears the selection. Without carrying it
@@ -124,6 +133,19 @@ class MainWindow(QMainWindow):
         )
         self.sold_action.triggered.connect(lambda: self._set_status("sold"))
         bar.addAction(self.sold_action)
+
+        self.details_action = QAction("Edit coin details…", self)
+        self.details_action.setToolTip(
+            "Catalogue numbers, grades, certifications and links for this coin"
+        )
+        self.details_action.triggered.connect(self._show_details)
+        bar.addAction(self.details_action)
+        self.view.details_action = self.details_action
+
+        self.owned_action = QAction("Unmark as sold", self)
+        self.owned_action.setToolTip("Put the selected coins back among what you own")
+        self.owned_action.triggered.connect(lambda: self._set_status("owned"))
+        bar.addAction(self.owned_action)
 
         self.move_action = QAction("Move to…", self)
         self.move_action.setToolTip("Move the selected coins to another subcollection")
@@ -212,6 +234,7 @@ class MainWindow(QMainWindow):
         panel_action.setText("Show the selected coin's details")
         view_menu.addSeparator()
         view_menu.addAction(panel_action)
+        view_menu.addAction(self.details_action)
         review_action = QAction("Go to next unconfirmed sort value", self)
         review_action.triggered.connect(self._go_to_review)
         view_menu.addAction(review_action)
@@ -219,9 +242,10 @@ class MainWindow(QMainWindow):
         collection_menu = self.menuBar().addMenu("&Collection")
         collection_menu.addAction(self.move_action)
         collection_menu.addAction(self.sold_action)
-        owned_action = QAction("Mark as owned", self)
-        owned_action.triggered.connect(lambda: self._set_status("owned"))
-        collection_menu.addAction(owned_action)
+        collection_menu.addAction(self.owned_action)
+        modifiers_action = QAction("Grade modifiers…", self)
+        modifiers_action.triggered.connect(self._manage_modifiers)
+        collection_menu.addAction(modifiers_action)
         collection_menu.addSeparator()
         new_sub = QAction("New subcollection…", self)
         new_sub.triggered.connect(self._new_subcollection)
@@ -267,7 +291,7 @@ class MainWindow(QMainWindow):
             )
 
     def _after_undo(self, _index: int) -> None:
-        self.model.refresh()
+        self.guard("undo", self.model.refresh)
         self.detail.refresh()
 
     def _run_command(self, command: object) -> None:
@@ -323,7 +347,10 @@ class MainWindow(QMainWindow):
         subcollection = self.current_subcollection()
         if subcollection is None:
             return
-        self.undo.push(AddSpecimens(self.service, subcollection.id, count))
+        if self.guard("adding rows", lambda: self.undo.push(
+            AddSpecimens(self.service, subcollection.id, count)
+        )) is None and self.undo.count() == 0:
+            return
         self.model.refresh()
         self.statusBar().showMessage(f"Added {count} row(s)", 4000)
 
@@ -422,6 +449,22 @@ class MainWindow(QMainWindow):
             self.session.commit()
             self.model.refresh()
 
+    def _show_details(self) -> None:
+        """Reveal the panel for the selected coin, and focus it."""
+        rows = sorted({index.row() for index in self.view.selectedIndexes()})
+        if rows:
+            self.detail.show_specimen(self.model.specimen_at(rows[0]))
+        self.detail.setVisible(True)
+        self.detail.raise_()
+        self.detail.setFocus()
+        if not rows:
+            self.statusBar().showMessage("Select a coin first", 4000)
+
+    def _manage_modifiers(self) -> None:
+        ManageModifiersDialog(self.service, self).exec()
+        self.guard("reloading", self.model.refresh)
+        self.detail.refresh()
+
     def _manage_columns(self) -> None:
         subcollection = self.current_subcollection()
         if subcollection is None:
@@ -500,6 +543,30 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Backed up to {path.name}", 6000)
 
     # -- status -----------------------------------------------------------
+
+    def guard(self, description: str, work: Callable[[], object]) -> object | None:
+        """Run something, and recover if it fails.
+
+        A failed statement leaves the database session unusable, so *every* later operation
+        fails too — the window looks dead and the coins look gone. Rolling back here turns one
+        mistake into one message. This exists because that is exactly what happened: adding a
+        grade whose name was already in use took the whole application down with it.
+        """
+        try:
+            return work()
+        except Exception as exc:  # noqa: BLE001 - the point is to catch everything
+            self.session.rollback()
+            message = _readable(exc)
+            self.statusBar().showMessage(f"{description} failed: {message}", 12000)
+            QMessageBox.warning(
+                self,
+                description.capitalize(),
+                f"{message}\n\nNothing was changed, and the rest of your collection is "
+                "unaffected.",
+            )
+            self.model.refresh()
+            self.detail.refresh()
+            return None
 
     def _show_error(self, message: str) -> None:
         self.statusBar().showMessage(message, 8000)

@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDockWidget,
-    QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
     QInputDialog,
@@ -30,6 +29,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QPushButton,
     QVBoxLayout,
@@ -37,21 +37,22 @@ from PySide6.QtWidgets import (
 )
 from sqlalchemy import select
 
-from ..constants import GRADE_MODIFIER_KINDS, GRADE_SOURCES, LINK_KINDS
+from .. import grading
+from ..constants import LINK_KINDS
 from ..errors import NumisError
 from ..models import (
     Catalog,
     CatalogReference,
     Certification,
     ExternalLink,
-    GradeLevel,
-    GradeModifier,
     GradeScale,
     GradingCompany,
     Specimen,
     SpecimenGrade,
 )
 from ..services import CollectionService
+from .commands import readable
+from .grade_dialog import GradeDialog
 
 NEW_ENTRY = "New…"
 
@@ -82,11 +83,24 @@ class _Section(QWidget):
         self.hint.setStyleSheet("color: #666;")
 
         self.add_button = QPushButton("Add…")
+        self.edit_button = QPushButton("Edit…")
         self.remove_button = QPushButton("Remove")
+        self.up_button = QPushButton("▲")
+        self.down_button = QPushButton("▼")
+        for arrow in (self.up_button, self.down_button):
+            arrow.setMaximumWidth(32)
+            arrow.setToolTip("Change which one a single-value column shows")
         buttons = QHBoxLayout()
-        buttons.addWidget(self.add_button)
-        buttons.addWidget(self.remove_button)
+        for widget in (
+            self.add_button, self.edit_button, self.remove_button,
+            self.up_button, self.down_button,
+        ):
+            buttons.addWidget(widget)
         buttons.addStretch()
+
+        self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._context_menu)
+        self.list.doubleClicked.connect(lambda _index: self.edit_button.click())
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 8)
@@ -94,6 +108,17 @@ class _Section(QWidget):
         layout.addWidget(self.hint)
         layout.addWidget(self.list)
         layout.addLayout(buttons)
+
+    def _context_menu(self, position: object) -> None:
+        """Right-click an entry to edit, remove or promote it."""
+        if self.list.currentItem() is None:
+            return
+        menu = QMenu(self)
+        menu.addAction("Edit…", self.edit_button.click)
+        menu.addAction("Remove", self.remove_button.click)
+        menu.addSeparator()
+        menu.addAction("Show this one first", self.up_button.click)
+        menu.exec(self.list.viewport().mapToGlobal(position))
 
     def selected_id(self) -> int | None:
         item = self.list.currentItem()
@@ -105,11 +130,19 @@ class _Section(QWidget):
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, identifier)
             self.list.addItem(item)
-        self.remove_button.setEnabled(bool(rows))
+        for widget in (self.edit_button, self.remove_button, self.up_button, self.down_button):
+            widget.setEnabled(bool(rows))
 
     def set_enabled(self, enabled: bool) -> None:
         self.add_button.setEnabled(enabled)
-        self.remove_button.setEnabled(enabled and self.list.count() > 0)
+        for widget in (self.edit_button, self.remove_button, self.up_button, self.down_button):
+            widget.setEnabled(enabled and self.list.count() > 0)
+
+    def ordered_ids(self) -> list[int]:
+        return [
+            self.list.item(row).data(Qt.ItemDataRole.UserRole)
+            for row in range(self.list.count())
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +166,7 @@ class CatalogueReferenceDialog(QDialog):
         self.catalogue = _combo_with_new(catalogues)
         self.number = QLineEdit()
         self.number.setPlaceholderText("2073, A54.2, 22.123")
-        self.primary = QCheckBox("Use as this coin's main reference")
+        self.primary = QCheckBox("Show this one first")
         self.primary.setChecked(not catalogues)
 
         form = QFormLayout()
@@ -176,163 +209,6 @@ class CatalogueReferenceDialog(QDialog):
             return None
 
 
-class GradeDialog(QDialog):
-    """Record a grade, creating the scale, its levels and any modifiers as needed."""
-
-    def __init__(self, service: CollectionService, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.service = service
-        self.setWindowTitle("Add grade")
-        self.setMinimumWidth(460)
-
-        self.scale = _combo_with_new(
-            [
-                (f"{scale.code} — {scale.name}", scale.id)
-                for scale in service.session.scalars(select(GradeScale).order_by(GradeScale.code))
-            ]
-        )
-        self.level = QComboBox()
-        self.source = QComboBox()
-        self.source.addItems(GRADE_SOURCES)
-        self.source.setCurrentText("self")
-        self.assigned_by = QLineEdit()
-        self.assigned_by.setPlaceholderText("NGC, a dealer's name, or your own")
-        self.detail = QLineEdit()
-        self.detail.setPlaceholderText("Cleaned, scratches — only for problem coins")
-        self.modifiers = QListWidget()
-        self.modifiers.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-        self.modifiers.setMaximumHeight(80)
-        self.new_modifier = QPushButton("New modifier…")
-        self.primary = QCheckBox("Show this as the coin's grade")
-        self.primary.setChecked(True)
-
-        form = QFormLayout()
-        form.addRow("Scale", self.scale)
-        form.addRow("Grade", self.level)
-        form.addRow("Modifiers", self.modifiers)
-        form.addRow("", self.new_modifier)
-        form.addRow("Problem", self.detail)
-        form.addRow("Source", self.source)
-        form.addRow("Assigned by", self.assigned_by)
-        form.addRow("", self.primary)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-
-        layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addWidget(buttons)
-
-        self.scale.currentIndexChanged.connect(self._reload_levels)
-        self.new_modifier.clicked.connect(self._create_modifier)
-        self._reload_modifiers()
-        self._reload_levels()
-
-    def _reload_levels(self) -> None:
-        self.level.clear()
-        identifier = self.scale.currentData()
-        if identifier is None:
-            self.level.addItem("(define the scale first)", None)
-            return
-        levels = self.service.session.scalars(
-            select(GradeLevel)
-            .where(GradeLevel.grade_scale_id == identifier)
-            .order_by(GradeLevel.normalised.desc())
-        )
-        for level in levels:
-            self.level.addItem(f"{level.label}  ({level.normalised:g})", level.label)
-        self.level.addItem(NEW_ENTRY, None)
-
-    def _reload_modifiers(self) -> None:
-        self.modifiers.clear()
-        for modifier in self.service.session.scalars(
-            select(GradeModifier).order_by(GradeModifier.kind, GradeModifier.code)
-        ):
-            item = QListWidgetItem(
-                f"{modifier.label}  ({modifier.kind}, {modifier.normalised_delta:+g})"
-            )
-            item.setData(Qt.ItemDataRole.UserRole, modifier.code)
-            self.modifiers.addItem(item)
-
-    def _create_modifier(self) -> None:
-        label, accepted = QInputDialog.getText(
-            self, "New modifier", "Name (Details, CAC green, +, star):"
-        )
-        if not accepted or not label.strip():
-            return
-        kind, accepted = QInputDialog.getItem(
-            self, "New modifier", "What kind is it?", list(GRADE_MODIFIER_KINDS), 0, False
-        )
-        if not accepted:
-            return
-        default = -0.4 if kind == "detail" else 0.15
-        delta, accepted = QInputDialog.getDouble(
-            self,
-            "New modifier",
-            "How far does it shift the grade?\n\n"
-            "A small negative number keeps a problem grade just below its base grade;\n"
-            "a small positive one lifts a coin slightly within its grade.",
-            default,
-            -5.0,
-            5.0,
-            2,
-        )
-        if not accepted:
-            return
-        code = label.strip().upper().replace(" ", "_")
-        self.service.create_grade_modifier(code, label.strip(), kind, delta)
-        self.service.session.commit()
-        self._reload_modifiers()
-
-    def resolve_scale(self) -> GradeScale | None:
-        identifier = self.scale.currentData()
-        if identifier is not None:
-            return self.service.session.get(GradeScale, identifier)
-        code, accepted = QInputDialog.getText(
-            self, "New grading scale", "Short code (SHELDON, ADJ, CN10):"
-        )
-        if not accepted or not code.strip():
-            return None
-        name, accepted = QInputDialog.getText(
-            self, "New grading scale", "Full name:", text=code.strip()
-        )
-        if not accepted:
-            return None
-        return self.service.create_grade_scale(code.strip(), name.strip() or code.strip())
-
-    def resolve_level(self, scale: GradeScale) -> str | None:
-        label = self.level.currentData()
-        if label is not None:
-            return label
-        text, accepted = QInputDialog.getText(
-            self, "New grade", f"Grade name on the {scale.code} scale (MS63, VF, 8):"
-        )
-        if not accepted or not text.strip():
-            return None
-        position, accepted = QInputDialog.getDouble(
-            self,
-            "New grade",
-            "Where does it sit on the shared scale?\n\n"
-            "This is the number every standard is compared on, so grades from different\n"
-            "systems can be sorted together. Higher is better; 70 is a perfect coin.",
-            50.0,
-            0.0,
-            100.0,
-            1,
-        )
-        if not accepted:
-            return None
-        self.service.add_grade_level(scale, text.strip(), position)
-        self.service.session.commit()
-        return text.strip()
-
-    def selected_modifier_codes(self) -> list[str]:
-        return [item.data(Qt.ItemDataRole.UserRole) for item in self.modifiers.selectedItems()]
-
-
 class CertificationDialog(QDialog):
     """Record a certification, creating the grading company if needed."""
 
@@ -361,7 +237,17 @@ class CertificationDialog(QDialog):
             self.grade.addItem(grade.raw_text, grade.id)
         self.graded_on = QLineEdit()
         self.graded_on.setPlaceholderText("YYYY-MM-DD, optional")
-        self.primary = QCheckBox("Show this as the coin's certification")
+        self.url = QLineEdit()
+        self.url.setPlaceholderText("https://… the company's verification page, optional")
+        self.sticker = QComboBox()
+        self.sticker.addItem("(none)", None)
+        for modifier in service.modifiers("sticker"):
+            self.sticker.addItem(
+                f"{modifier.issuer or modifier.label}", modifier.code
+            )
+        self.sticker_detail = QLineEdit()
+        self.sticker_detail.setPlaceholderText("green, gold — what this sticker says")
+        self.primary = QCheckBox("Show this one first")
         self.primary.setChecked(True)
 
         form = QFormLayout()
@@ -369,10 +255,14 @@ class CertificationDialog(QDialog):
         form.addRow("Certificate no.", self.number)
         form.addRow("Grade on it", self.grade)
         form.addRow("Graded on", self.graded_on)
+        form.addRow("Verification link", self.url)
+        form.addRow("Sticker awarded", self.sticker)
+        form.addRow("Sticker says", self.sticker_detail)
         form.addRow("", self.primary)
         note = QLabel(
             "Several certifications can be current at once, so adding an endorsement does not "
-            "replace a grading company's own."
+            "replace a grading company's own. A sticker chosen here is recorded as issued by "
+            "this certification and attached to the grade above."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color: #666;")
@@ -448,12 +338,6 @@ class LinkDialog(QDialog):
         layout.addWidget(buttons)
 
 
-class SortValueDialog(QDialog):  # pragma: no cover - kept for symmetry, unused for now
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.value = QDoubleSpinBox()
-
-
 # ---------------------------------------------------------------------------
 # The panel
 # ---------------------------------------------------------------------------
@@ -463,9 +347,12 @@ class DetailPanel(QDockWidget):
     """Catalogue numbers, grades, certifications and links for the selected coin."""
 
     changed = Signal()
+    #: Something could not be saved. The window turns this into a message.
+    failed = Signal(str)
 
     def __init__(self, service: CollectionService, parent: QWidget | None = None) -> None:
         super().__init__("Selected coin", parent)
+        self.last_error: str | None = None
         self.service = service
         self.specimen: Specimen | None = None
         self.setObjectName("DetailPanel")
@@ -495,6 +382,29 @@ class DetailPanel(QDockWidget):
             layout.addWidget(section)
         layout.addStretch()
         self.setWidget(body)
+
+        self.catalogues.edit_button.clicked.connect(
+            lambda: self._edit(CatalogReference, self.catalogues)
+        )
+        self.grades.edit_button.clicked.connect(
+            lambda: self._edit(SpecimenGrade, self.grades)
+        )
+        self.certifications.edit_button.clicked.connect(
+            lambda: self._edit(Certification, self.certifications)
+        )
+        self.links.edit_button.clicked.connect(lambda: self._edit(ExternalLink, self.links))
+        for model, section in (
+            (CatalogReference, self.catalogues),
+            (SpecimenGrade, self.grades),
+            (Certification, self.certifications),
+            (ExternalLink, self.links),
+        ):
+            section.up_button.clicked.connect(
+                lambda _checked=False, m=model, s=section: self._move(m, s, -1)
+            )
+            section.down_button.clicked.connect(
+                lambda _checked=False, m=model, s=section: self._move(m, s, 1)
+            )
 
         self.catalogues.add_button.clicked.connect(self._add_catalogue_reference)
         self.grades.add_button.clicked.connect(self._add_grade)
@@ -543,8 +453,9 @@ class DetailPanel(QDockWidget):
         self.catalogues.fill(
             [
                 (
+                    f"{reference.rank}. "
                     f"{self.service.session.get(Catalog, reference.catalog_id).code} "
-                    f"{reference.number_raw}" + ("  (main)" if reference.is_primary else ""),
+                    f"{reference.number_raw}",
                     reference.id,
                 )
                 for reference in self.service.references_for(specimen)
@@ -553,21 +464,27 @@ class DetailPanel(QDockWidget):
         self.grades.fill(
             [
                 (
-                    f"{grade.raw_text}"
-                    + (f"  — {grade.detail_note}" if grade.detail_note else "")
+                    f"{grade.rank}. "
+                    + grading.render(grade, grading.GradeDisplay(modifier_details=True))
                     + f"  [{grade.assigned_by or grade.source}]"
-                    + ("  (shown)" if grade.is_primary else ""),
+                    + f"  = {grade.normalised:g}" * (grade.normalised is not None),
                     grade.id,
                 )
-                for grade in specimen.grades
+                for grade in self.service.grades_for(specimen)
             ]
         )
         self.certifications.fill(
             [
                 (
-                    f"{certification.company.code} {certification.cert_number or ''}".strip()
+                    f"{certification.rank}. "
+                    + f"{certification.company.code} {certification.cert_number or ''}".strip()
                     + f"  · {certification.status}"
-                    + ("  (shown)" if certification.is_primary else ""),
+                    + ("  · link" if certification.verification_url else "")
+                    + "".join(
+                        f"  · {link.modifier.issuer or link.modifier.label}"
+                        + (f" {link.detail}" if link.detail else "")
+                        for link in self.service.stickers_for(certification)
+                    ),
                     certification.id,
                 )
                 for certification in self.service.certification_history(specimen)
@@ -580,11 +497,121 @@ class DetailPanel(QDockWidget):
             ]
         )
 
-    def _apply(self, command: object) -> None:
-        if self.run_command is not None:
-            self.run_command(command)
+    def _edit(self, model: type, section: _Section) -> None:
+        """Open the right editor for the selected entry."""
+        row_id = section.selected_id()
+        if row_id is None:
+            return
+        if model is SpecimenGrade:
+            self._edit_grade(row_id)
+            return
+        row = self.service.session.get(model, row_id)
+        if row is None:
+            return
+        if model is ExternalLink:
+            self._edit_link(row)
+        elif model is CatalogReference:
+            self._edit_reference(row)
+        elif model is Certification:
+            self._edit_certification(row)
+
+    def _edit_reference(self, reference: CatalogReference) -> None:
+        from ..catalogs import build_reference_columns
+
+        catalog = self.service.session.get(Catalog, reference.catalog_id)
+        number, accepted = QInputDialog.getText(
+            self,
+            "Edit catalogue number",
+            f"Number in {catalog.code}:",
+            text=reference.number_raw,
+        )
+        if not accepted or not number.strip():
+            return
+        try:
+            for name, value in build_reference_columns(
+                number,
+                catalog_code=catalog.code,
+                letter_prefix_order=catalog.letter_prefix_order,
+            ).items():
+                setattr(reference, name, value)
+            self.service.session.commit()
+        except Exception as exc:
+            self.service.session.rollback()
+            QMessageBox.warning(self, "Catalogue number", _readable(exc))
         self.refresh()
         self.changed.emit()
+
+    def _edit_certification(self, certification: Certification) -> None:
+        number, accepted = QInputDialog.getText(
+            self,
+            "Edit certification",
+            f"{certification.company.code} certificate number:",
+            text=certification.cert_number or "",
+        )
+        if not accepted:
+            return
+        url, accepted = QInputDialog.getText(
+            self,
+            "Edit certification",
+            "Verification link:",
+            text=certification.verification_url or "",
+        )
+        if not accepted:
+            return
+        certification.cert_number = number.strip() or None
+        certification.verification_url = url.strip() or None
+        self.service.session.commit()
+        self.refresh()
+        self.changed.emit()
+
+    def _edit_link(self, link: ExternalLink) -> None:
+        dialog = LinkDialog(self)
+        dialog.kind.setCurrentText(link.kind)
+        dialog.url.setText(link.url)
+        dialog.label.setText(link.label or "")
+        dialog.reference.setText(link.reference or "")
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.url.text().strip():
+            return
+        link.kind = dialog.kind.currentText()
+        link.url = dialog.url.text().strip()
+        link.label = dialog.label.text().strip() or None
+        link.reference = dialog.reference.text().strip() or None
+        self.service.session.commit()
+        self.refresh()
+        self.changed.emit()
+
+    def _move(self, model: type, section: _Section, delta: int) -> None:
+        """Reorder an entry, which is what decides what a single-value column shows."""
+        row_id = section.selected_id()
+        if row_id is None:
+            return
+        ids = section.ordered_ids()
+        position = ids.index(row_id)
+        target = position + delta
+        if not 0 <= target < len(ids):
+            return
+        ids[position], ids[target] = ids[target], ids[position]
+        self.service.reorder([self.service.session.get(model, identifier) for identifier in ids])
+        self.service.session.commit()
+        self.refresh()
+        self.changed.emit()
+        section.list.setCurrentRow(target)
+
+    def _apply(self, command: object) -> bool:
+        """Run a command and report anything it could not do. Returns whether it worked.
+
+        Failures are announced rather than shown here, so the panel does not open dialogs of
+        its own — the window decides how to present them, and tests can read them.
+        """
+        if self.run_command is not None:
+            self.run_command(command)
+        self.last_error = getattr(command, "error", None)
+        self.refresh()
+        self.changed.emit()
+        if self.last_error:
+            self.failed.emit(self.last_error)
+            return False
+        return True
 
     # -- adding -----------------------------------------------------------
 
@@ -747,9 +774,5 @@ class DetailPanel(QDockWidget):
         self._apply(DeleteChildRow(self.service, f"remove {description}", model, row_id))
 
 
-def _readable(error: Exception) -> str:
-    """Turn a database error into something worth reading."""
-    text = str(getattr(error, "orig", error))
-    if "UNIQUE constraint failed" in text:
-        return "That is already recorded on this coin."
-    return text
+#: Shared with the window, which reports failures the same way.
+_readable = readable

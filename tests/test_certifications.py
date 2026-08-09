@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from datetime import date
 
-import pytest
-from sqlalchemy.exc import IntegrityError
-
 
 def test_a_new_library_has_no_grading_companies(svc):
     from numis.models import GradingCompany
@@ -20,33 +17,22 @@ def test_two_certifications_can_be_current_at_once(svc, modern):
     ngc = svc.create_grading_company("NGC", "Numismatic Guaranty Company")
     cac = svc.create_grading_company("CAC", "Certified Acceptance Corporation")
 
-    svc.add_certification(coin, ngc, cert_number="2871554-013", is_primary=True)
+    svc.add_certification(coin, ngc, cert_number="2871554-013", rank=1)
     svc.add_certification(coin, cac)  # endorsements often have no number of their own
 
     assert len(svc.current_certifications(coin)) == 2
 
 
-def test_only_one_certification_can_be_primary(svc, modern, session):
+def test_certifications_queue_in_order_of_precedence(svc, modern):
     coin = svc.add_specimen(modern)
     ngc = svc.create_grading_company("NGC", "NGC")
-    first = svc.add_certification(coin, ngc, cert_number="1", is_primary=True)
-    second = svc.add_certification(coin, ngc, cert_number="2", is_primary=True)
-    assert (first.is_primary, second.is_primary) == (0, 1)
+    first = svc.add_certification(coin, ngc, cert_number="1")
+    second = svc.add_certification(coin, ngc, cert_number="2")
+    assert (first.rank, second.rank) == (1, 2)
+    assert svc.primary_certification(coin) is first
 
-
-def test_a_second_primary_is_refused_at_the_database_level(svc, modern, session):
-    from numis.models import Certification
-
-    coin = svc.add_specimen(modern)
-    ngc = svc.create_grading_company("NGC", "NGC")
-    svc.add_certification(coin, ngc, cert_number="1", is_primary=True)
-    session.add(
-        Certification(
-            specimen_id=coin.id, grading_company_id=ngc.id, cert_number="2", is_primary=1
-        )
-    )
-    with pytest.raises(IntegrityError):
-        session.flush()
+    svc.reorder([second, first])
+    assert svc.primary_certification(coin) is second
 
 
 def test_certification_number_may_be_absent(svc, modern):
@@ -80,7 +66,7 @@ def test_grading_history_is_a_chain(svc, modern):
     )
     new = svc.add_certification(
         coin, ngc, cert_number="222222-002", graded_on=date(2024, 11, 15),
-        is_primary=True, supersedes=old,
+        rank=1, supersedes=old,
     )
 
     history = svc.certification_history(coin)
@@ -101,16 +87,15 @@ def test_an_explicit_outcome_is_not_overwritten_by_superseding(svc, modern):
 def test_a_current_certification_becomes_superseded(svc, modern):
     coin = svc.add_specimen(modern)
     ngc = svc.create_grading_company("NGC", "NGC")
-    old = svc.add_certification(coin, ngc, cert_number="1", status="current", is_primary=True)
-    svc.add_certification(coin, ngc, cert_number="2", supersedes=old, is_primary=True)
+    old = svc.add_certification(coin, ngc, cert_number="1", status="current")
+    svc.add_certification(coin, ngc, cert_number="2", supersedes=old)
     assert old.status == "superseded"
-    assert old.is_primary == 0
 
 
 def test_a_certification_carries_its_grade_onto_the_shared_axis(svc, modern, sheldon):
     coin = svc.add_specimen(modern)
     ngc = svc.create_grading_company("NGC", "NGC")
-    grade = svc.add_grade(coin, sheldon, "MS63", source="tpg", assigned_by="NGC", is_primary=True)
-    certification = svc.add_certification(coin, ngc, cert_number="1", grade=grade, is_primary=True)
+    grade = svc.add_grade(coin, sheldon, "MS63", base_value=63.0, source="tpg", assigned_by="NGC")
+    certification = svc.add_certification(coin, ngc, cert_number="1", grade=grade, rank=1)
     assert certification.specimen_grade_id == grade.id
     assert certification.grade.normalised == 63.0
