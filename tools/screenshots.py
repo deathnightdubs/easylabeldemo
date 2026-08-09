@@ -200,11 +200,17 @@ def main(argv: list[str]) -> int:
     service = window.service
     scale = service.create_grade_scale("SHELDON", "Sheldon 1-70", kind="numeric")
     service.add_grade_level(scale, "MS63", 63.0, numeric_value=63.0)
-    service.create_grade_modifier("CACG", "CAC green", "sticker", 0.15)
+    # A sticker reads by the name it was given, not by its issuer, so the short form and the
+    # full name are both worth showing off here.
+    service.create_grade_modifier(
+        "CACG", "CAC Gold", "sticker", 0.15, abbreviation="CAC", issuer="CAC"
+    )
+    service.create_grade_modifier("FB", "Full Bands", "strike", 0.15, abbreviation="FB")
     ngc = service.create_grading_company("NGC", "Numismatic Guaranty Company")
     subcollection = window.current_subcollection()
     first = next(iter(service.session.scalars(service.live_specimens(subcollection))))
-    service.add_grade(first, scale, "MS63", base_value=63.0, modifiers=[("CACG", "Green")],
+    service.add_grade(first, scale, "MS63", base_value=63.0,
+                      modifiers=[("CACG", None), ("FB", None)],
                       source="tpg", assigned_by="NGC", rank=1)
     service.add_certification(first, ngc, cert_number="2871554-013", rank=1)
     service.add_link(first, "https://zeno.ru/showphoto.php?photo=12345", kind="zeno",
@@ -237,6 +243,7 @@ def main(argv: list[str]) -> int:
         service, window.current_subcollection(), "grades", ColumnDisplay(), window
     )
     settings.modifier_details.setChecked(True)
+    settings.modifier_full_names.setChecked(True)
     settings.show_assigned_by.setChecked(True)
     app.processEvents()
     shot(app, settings, target / "11-column-settings.png", 560, 460)

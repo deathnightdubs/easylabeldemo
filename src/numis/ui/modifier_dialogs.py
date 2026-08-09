@@ -161,6 +161,11 @@ class ManageModifiersDialog(QDialog):
 
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["Name", "Shows as", "Kind", "Effect", "Used by"])
+        self.table.setToolTip(
+            "Listed in the order they append to a grade. Move one up or down to change that "
+            "order everywhere — it belongs to the modifier, not to a coin, so two coins with "
+            "the same modifiers always read them the same way."
+        )
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -170,15 +175,21 @@ class ManageModifiersDialog(QDialog):
         add = QPushButton("New…")
         edit = QPushButton("Edit…")
         delete = QPushButton("Delete…")
+        self.up = QPushButton("Move up")
+        self.down = QPushButton("Move down")
         add.clicked.connect(self._add)
         edit.clicked.connect(self._edit)
         delete.clicked.connect(self._delete)
+        self.up.clicked.connect(lambda: self._move(-1))
+        self.down.clicked.connect(lambda: self._move(1))
         self.table.doubleClicked.connect(self._edit)
 
         buttons = QHBoxLayout()
         for widget in (add, edit, delete):
             buttons.addWidget(widget)
         buttons.addStretch()
+        buttons.addWidget(self.up)
+        buttons.addWidget(self.down)
 
         close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         close.rejected.connect(self.accept)
@@ -190,8 +201,8 @@ class ManageModifiersDialog(QDialog):
         layout.addWidget(close)
         self._reload()
 
-    def _reload(self) -> None:
-        modifiers = self.service.modifiers()
+    def _reload(self, keep: int | None = None) -> None:
+        modifiers = self.service.modifiers_in_reading_order()
         self.table.setRowCount(len(modifiers))
         for row, modifier in enumerate(modifiers):
             cells = [
@@ -206,6 +217,8 @@ class ManageModifiersDialog(QDialog):
                 if column == 0:
                     item.setData(Qt.ItemDataRole.UserRole, modifier.id)
                 self.table.setItem(row, column, item)
+            if keep is not None and modifier.id == keep:
+                self.table.selectRow(row)
 
     def _selected(self) -> GradeModifier | None:
         row = self.table.currentRow()
@@ -228,6 +241,29 @@ class ManageModifiersDialog(QDialog):
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.save():
             self.service.session.commit()
             self._reload()
+
+    def _move(self, offset: int) -> None:
+        """Move the selected modifier earlier or later in the reading order."""
+        modifier = self._selected()
+        if modifier is None:
+            return
+        order = self.service.modifiers_in_reading_order()
+        position = next(
+            (index for index, entry in enumerate(order) if entry.id == modifier.id), None
+        )
+        if position is None:  # pragma: no cover - defensive
+            return
+        target = position + offset
+        if not 0 <= target < len(order):
+            return
+        order[position], order[target] = order[target], order[position]
+        try:
+            self.service.reorder_modifiers(order)
+            self.service.session.commit()
+        except NumisError as exc:  # pragma: no cover - defensive
+            self.service.session.rollback()
+            QMessageBox.warning(self, "Modifier order", str(exc))
+        self._reload(keep=modifier.id)
 
     def _delete(self) -> None:
         modifier = self._selected()

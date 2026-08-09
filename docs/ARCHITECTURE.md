@@ -23,7 +23,7 @@ values are typed straight into cells and everything is undoable.
 | Language | Python 3.12 (3.11 minimum) |
 | Storage | SQLite via SQLAlchemy 2.0 ORM, plus FTS5 for search |
 | Interface | PySide6 (Qt 6) |
-| Tests | pytest — 677 at the time of writing, Qt tests run headless |
+| Tests | pytest — 740 at the time of writing, Qt tests run headless |
 | Lint | ruff, line length 100, `E,F,I,UP,B,SIM` |
 
 A **library** is a folder, not a file: `MyCollection.numis/` containing `collection.db` plus
@@ -55,7 +55,7 @@ The core is installable and usable **without** PySide6 at all — see the `gui` 
 | `migrations.py` | Hand-written ordered migrations. See §6. |
 | `fields/` | The field-type system: `registry.py` (13 types), `dates.py` (coin dates), `units.py` (mass, length, purity, angle, money). |
 | `catalogs.py` | Catalogue number parsing and the sort-segment scheme that makes `2` precede `10`. |
-| `grading.py` | Calculated grade values and how a grade *reads*. |
+| `grading.py` | Calculated grade values and how a grade *reads*. Note the split described in §4.7. |
 | `columns.py` | `ColumnDisplay` — how a special-system column displays itself. |
 | `filters.py` | `Criterion`, `FilterGroup`, `SortKey` — a filter as a value. No SQL, no ORM. |
 | `filter_sql.py` | Translating those into SQLAlchemy. |
@@ -180,7 +180,24 @@ under AND/OR/NOT. Sort keys are scalar subqueries for the same reason.
 They were once three code paths and the result was that searching silently discarded the sort while
 a sorted column silently ignored the filter. Do not add a fourth path.
 
-### 4.7 The search index maintains itself
+### 4.7 A modifier's name is shared; what a coin says about it is not
+
+`grade_modifier` holds the definition — full name, short form, arithmetic, and the order it appends
+in. `specimen_grade_modifier.detail` holds what one coin says: `Harshly Cleaned`, `Gold`. Keeping
+these apart is what stops a user needing a new global modifier for every problem a coin might have.
+
+Two consequences that were once wrong:
+
+- A sticker reads by **its own name**, not by its issuer. Substituting the issuer meant a modifier
+  the user called `CAC Gold` displayed as `CAC`.
+- The append order lives on the **definition**, not the coin, so two coins carrying the same
+  modifiers can never read them differently. That invariant has a test; do not move the order onto
+  `specimen_grade_modifier.sort_order` to make it per coin.
+
+`grading.assemble()` is the single renderer. The grade dialog's preview uses it too, so the preview
+cannot drift from what the column shows.
+
+### 4.8 The search index maintains itself
 
 `service.reindex(specimen)` is called from the service at every point that changes indexed content
 (values, names, identifiers, catalogue numbers). It used to be the caller's job, nobody in the UI

@@ -165,10 +165,12 @@ be on the rows.
 
 How much of each, which necessarily differs by system:
 
-- **Grades** — modifiers; whether modifiers are spelled out (`MS63 CAC Gold` against `MS63 CAC`);
-  the scale; the source; who assigned it. An individual grade can still opt out of showing its
-  assigner via `hide_assigned_by`, so recording that a dealer graded a hundred coins need not put
-  his name on a hundred rows.
+- **Grades** — modifiers; whether to add what each modifier says *on this coin*
+  (`Details — Harshly Cleaned`); full names instead of short forms (`Full Bands`, not `FB`);
+  whether to name a sticker's company; the scale; the source; who assigned it. An individual grade
+  can still opt out of showing its assigner via `hide_assigned_by`, so recording that a dealer
+  graded a hundred coins need not put his name on a hundred rows. See
+  [02](02-fields-and-special-systems.md), 4.2.1 for what each of those does to the text.
 - **Catalogue numbers** — whether to print the catalogue's code. Dead weight in a column that only
   ever shows one catalogue.
 - **Links** — a count, or the labels.

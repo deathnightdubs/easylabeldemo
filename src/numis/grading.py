@@ -14,9 +14,15 @@ first appears:
 
 * a plus or a star attaches with no space:      ``MS63+``
 * other modifiers are separated:                ``MS63 FB``
-* several combine in order:                     ``MS63 FB BN``
-* a detail is named only when asked for:        ``AU Details`` or ``AU Details — Harshly Cleaned``
-* a sticker shows its issuer, then its value:   ``MS63 CAC`` or ``MS63 CAC Gold``
+* several combine in a settled order:           ``MS63 FB BN``
+* short forms or full names:                    ``MS63 FB`` or ``MS63 Full Bands``
+* what a coin adds is optional:                 ``AU Details`` or ``AU Details — Harshly Cleaned``
+* a sticker reads by the name it was given:     ``MS63 CAC Gold``, not ``MS63 CAC``
+
+Two things are deliberately kept apart. A modifier's **own name** belongs to its definition and is
+shared: ``FB``/``Full Bands``, ``Details``, ``CAC Gold``. What a **particular coin** adds to it is
+recorded against that coin: ``Harshly Cleaned``, ``Gold``. That is what stops the user having to
+define a separate modifier for every problem a coin might have.
 """
 
 from __future__ import annotations
@@ -38,8 +44,13 @@ class GradeDisplay:
     """What to show for a grade, and how much of it."""
 
     modifiers: bool = True
-    #: Spell out what each modifier says: ``Details — Harshly Cleaned``, ``CAC Gold``.
+    #: Add what each modifier says *on this coin*: ``Details — Harshly Cleaned``, ``CAC Gold``.
+    #: Only has an effect where the coin actually records something; see :func:`render_modifier`.
     modifier_details: bool = False
+    #: Full names instead of short forms: ``Full Bands`` rather than ``FB``, ``Red`` not ``RD``.
+    modifier_full_names: bool = False
+    #: Name the company that issued a sticker, when the modifier's own name does not already.
+    sticker_issuer: bool = False
     scale: bool = False
     source: bool = False
     assigned_by: bool = False
@@ -51,7 +62,13 @@ class GradeDisplay:
     @classmethod
     def full(cls) -> GradeDisplay:
         return cls(
-            modifiers=True, modifier_details=True, scale=True, source=True, assigned_by=True
+            modifiers=True,
+            modifier_details=True,
+            modifier_full_names=True,
+            sticker_issuer=True,
+            scale=True,
+            source=True,
+            assigned_by=True,
         )
 
 
@@ -70,58 +87,138 @@ def calculated_value(
 
 
 def _ordered(links: Sequence[SpecimenGradeModifier]) -> list[SpecimenGradeModifier]:
-    def key(link: SpecimenGradeModifier) -> tuple[int, int, str]:
-        kind = link.modifier.kind if link.modifier else ""
+    """The order a grade's modifiers read in.
+
+    ``display_order`` comes first so the user can decide the sequence, and it lives on the
+    *definition* rather than on the coin: two coins carrying the same modifiers must never show
+    them differently. Anything left at 0 falls back to :data:`KIND_ORDER`, which is the order
+    these read in on a real slab.
+    """
+
+    def key(link: SpecimenGradeModifier) -> tuple[int, int, int, str]:
+        modifier = link.modifier
+        kind = modifier.kind if modifier else ""
         position = KIND_ORDER.index(kind) if kind in KIND_ORDER else len(KIND_ORDER)
-        return (position, link.sort_order, link.modifier.code if link.modifier else "")
+        chosen = modifier.display_order if modifier else 0
+        # 0 sorts last within the first element so an unordered modifier stays where its kind
+        # puts it, while anything explicitly ordered is pulled in front.
+        return (0 if chosen else 1, chosen, position, modifier.code if modifier else "")
 
-    return sorted(links, key=key)
+    return sorted(sorted(links, key=lambda link: link.sort_order), key=key)
 
 
-def render_modifier(link: SpecimenGradeModifier, *, with_detail: bool) -> str:
-    """How one modifier reads.
+def order_pairs(
+    pairs: Iterable[tuple[GradeModifier, str | None]],
+) -> list[tuple[GradeModifier, str | None]]:
+    """Put ``(modifier, detail)`` pairs into reading order, as :func:`_ordered` does for links."""
 
-    ``with_detail`` is the difference between ``CAC`` and ``CAC Gold``, and between ``Details``
-    and ``Details — Harshly Cleaned``.
+    def key(pair: tuple[GradeModifier, str | None]) -> tuple[int, int, int, str]:
+        modifier = pair[0]
+        position = (
+            KIND_ORDER.index(modifier.kind)
+            if modifier.kind in KIND_ORDER
+            else len(KIND_ORDER)
+        )
+        chosen = modifier.display_order or 0
+        return (0 if chosen else 1, chosen, position, modifier.code)
+
+    return sorted(pairs, key=key)
+
+
+def render_pair(
+    modifier: GradeModifier,
+    detail: str | None,
+    *,
+    with_detail: bool,
+    full_names: bool = False,
+    with_issuer: bool = False,
+) -> str:
+    """How one modifier reads, from the modifier and what a coin says about it.
+
+    Separate from :func:`render_modifier` so a dialog can preview a grade that has not been
+    saved, and so the preview cannot drift from the column.
+    """
+    text = modifier.reads_as(full_name=full_names, with_issuer=with_issuer)
+    if not with_detail or not detail:
+        return text
+    # A modifier named 'CAC Gold' on a coin whose sticker says 'Gold' must not read 'CAC Gold
+    # Gold'. Naming the variant in the modifier *and* recording it per coin is a reasonable
+    # thing to do, and saying it twice is never what was meant.
+    if detail.strip().casefold() in text.casefold():
+        return text
+    # A problem grade reads 'Details — Harshly Cleaned': the dash matters, because 'Details
+    # Harshly Cleaned' looks like the name of a grade rather than a grade and its explanation.
+    separator = " — " if modifier.kind == "detail" else " "
+    return f"{text}{separator}{detail.strip()}"
+
+
+def assemble(
+    label: str,
+    pairs: Iterable[tuple[GradeModifier, str | None]],
+    display: GradeDisplay | None = None,
+) -> str:
+    """A grade label with its modifiers appended, in reading order."""
+    display = display or GradeDisplay()
+    text = label or ""
+    if not display.modifiers:
+        return text
+    for modifier, detail in order_pairs(pairs):
+        piece = render_pair(
+            modifier,
+            detail,
+            with_detail=display.modifier_details,
+            full_names=display.modifier_full_names,
+            with_issuer=display.sticker_issuer,
+        )
+        if not piece:
+            continue
+        if modifier.attach_without_space:
+            text += piece
+        else:
+            text = f"{text} {piece}" if text else piece
+    return text
+
+
+def render_modifier(
+    link: SpecimenGradeModifier,
+    *,
+    with_detail: bool,
+    full_names: bool = False,
+    with_issuer: bool = False,
+) -> str:
+    """How one modifier reads on one coin.
+
+    Two separate things are being combined, and keeping them separate is the point:
+
+    * the **modifier's own name**, which the user chose — ``FB`` or ``Full Bands``, ``Details``,
+      ``CAC Gold``;
+    * what this **particular coin** adds to it, recorded per coin — ``Harshly Cleaned``, ``Gold``.
+
+    So ``MS63 FB`` becomes ``MS63 Full Bands`` with ``full_names``, and ``AU Details`` becomes
+    ``AU Details — Harshly Cleaned`` with ``with_detail``. A sticker is no longer reduced to its
+    issuer: a modifier the user named ``CAC Gold`` reads as ``CAC Gold``.
     """
     modifier = link.modifier
     if modifier is None:  # pragma: no cover - defensive
         return ""
-
-    if modifier.kind == "sticker":
-        # A sticker is somebody's endorsement, so the issuer is the useful part; the value
-        # (green, gold) only matters when the detail is wanted.
-        head = modifier.issuer or modifier.short
-        if with_detail and link.detail:
-            return f"{head} {link.detail}"
-        return head
-
-    if modifier.kind == "detail":
-        # Always reads as the modifier's own name, because 'Details' is the recognised term;
-        # what the problem actually was follows only when asked for.
-        if with_detail and link.detail:
-            return f"{modifier.label} — {link.detail}"
-        return modifier.label
-
-    if with_detail and link.detail:
-        return f"{modifier.short} {link.detail}"
-    return modifier.short
+    return render_pair(
+        modifier,
+        link.detail,
+        with_detail=with_detail,
+        full_names=full_names,
+        with_issuer=with_issuer,
+    )
 
 
 def render(grade: SpecimenGrade, display: GradeDisplay | None = None) -> str:
     """Render a grade for a column or a list."""
     display = display or GradeDisplay()
-    text = grade.grade_label or ""
-
-    if display.modifiers:
-        for link in _ordered(grade.modifier_links):
-            piece = render_modifier(link, with_detail=display.modifier_details)
-            if not piece:
-                continue
-            if link.modifier is not None and link.modifier.attach_without_space:
-                text += piece
-            else:
-                text = f"{text} {piece}" if text else piece
+    pairs = [
+        (link.modifier, link.detail)
+        for link in _ordered(grade.modifier_links)
+        if link.modifier is not None
+    ]
+    text = assemble(grade.grade_label or "", pairs, display)
 
     extras: list[str] = []
     if display.scale and grade.scale is not None:

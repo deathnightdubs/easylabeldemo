@@ -1442,6 +1442,7 @@ class CollectionService:
         abbreviation: str | None = None,
         issuer: str | None = None,
         attach_without_space: bool = False,
+        display_order: int = 0,
         notes: str | None = None,
     ) -> GradeModifier:
         if kind not in C.GRADE_MODIFIER_KINDS:
@@ -1457,11 +1458,35 @@ class CollectionService:
             abbreviation=abbreviation,
             issuer=issuer,
             attach_without_space=int(attach_without_space),
+            display_order=display_order,
             notes=notes,
         )
         self.session.add(modifier)
         self.session.flush()
         return modifier
+
+    def reorder_modifiers(self, modifiers: Sequence[GradeModifier]) -> None:
+        """Set the order these modifiers append to a grade in, 1..n.
+
+        The order lives on the definitions rather than on any coin, so changing it changes every
+        grade at once — which is the point: two coins carrying the same modifiers must never read
+        them differently. Anything not listed keeps ``display_order = 0`` and falls back to the
+        order its kind implies.
+        """
+        for position, modifier in enumerate(modifiers, start=1):
+            modifier.display_order = position
+        self.session.flush()
+        for modifier in modifiers:
+            for grade in self.grades_using_modifier(modifier):
+                self.refresh_grade_text(grade)
+
+    def clear_modifier_order(self) -> None:
+        """Go back to reading in the order each modifier's kind implies."""
+        for modifier in self.modifiers():
+            modifier.display_order = 0
+        self.session.flush()
+        for grade in self.session.scalars(select(SpecimenGrade)):
+            self.refresh_grade_text(grade)
 
     def update_grade_modifier(self, modifier: GradeModifier, **changes: Any) -> GradeModifier:
         """Edit a modifier. Every grade using it is re-rendered, since its reading may change."""
@@ -1534,6 +1559,16 @@ class CollectionService:
         if kind is not None:
             query = query.where(GradeModifier.kind == kind)
         return list(self.session.scalars(query.order_by(GradeModifier.kind, GradeModifier.label)))
+
+    def modifiers_in_reading_order(self) -> list[GradeModifier]:
+        """Every modifier in the order it would append to a grade.
+
+        The same ordering :mod:`numis.grading` uses, so what the management window lists top to
+        bottom is what a grade reads left to right.
+        """
+        return [modifier for modifier, _ in grading.order_pairs(
+            (modifier, None) for modifier in self.modifiers()
+        )]
 
     # -- certification ----------------------------------------------------
 
