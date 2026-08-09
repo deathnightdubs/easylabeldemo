@@ -1,0 +1,38 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run: collection manager (choose a library)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "numis.ui",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Run: collection manager (open Demo.numis)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "numis.ui",
+      "args": ["${workspaceFolder}/Demo.numis"],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Create Demo.numis (sample data)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "numis",
+      "args": ["demo", "${workspaceFolder}/Demo.numis"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "List a library in the terminal",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "numis",
+      "args": ["list", "${workspaceFolder}/Demo.numis", "--sort", "date_issued"],
+      "console": "integratedTerminal"
+    }
+  ]
+}
