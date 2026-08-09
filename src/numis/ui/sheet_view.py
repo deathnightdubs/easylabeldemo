@@ -26,6 +26,8 @@ class SheetView(QTableView):
     """A table that behaves the way a spreadsheet user expects."""
 
     sort_value_requested = Signal(QModelIndex)
+    #: A special-system column header was asked to change what it shows. Carries the section.
+    column_settings_requested = Signal(int)
     status = Signal(str)
 
     def __init__(self, parent: object | None = None) -> None:
@@ -217,13 +219,23 @@ class SheetView(QTableView):
         menu.addAction(self.clear_action)
         menu.exec(self.viewport().mapToGlobal(position))
 
-    def _show_header_menu(self, position: object) -> None:
-        header = self.horizontalHeader()
-        section = header.logicalIndexAt(position)
+    def header_menu(self, section: int) -> QMenu:
+        """What right-clicking a column header offers.
+
+        Built separately from showing it so that the contents can be examined without opening a
+        modal, which a headless test cannot dismiss.
+        """
         menu = QMenu(self)
         model = self.sheet_model()
 
         if section >= 0:
+            column = model.column_at(section)
+            if column is not None and column.kind != "field":
+                settings = menu.addAction("Column settings…")
+                settings.triggered.connect(
+                    lambda: self.column_settings_requested.emit(section)
+                )
+                menu.addSeparator()
             hide = menu.addAction(f"Hide “{model.headerData(section, Qt.Orientation.Horizontal)}”")
             hide.triggered.connect(lambda: self.setColumnHidden(section, True))
         if any(self.isColumnHidden(index) for index in range(model.columnCount())):
@@ -232,7 +244,11 @@ class SheetView(QTableView):
         menu.addSeparator()
         resize = menu.addAction("Fit columns to contents")
         resize.triggered.connect(self.resizeColumnsToContents)
-        menu.exec(header.mapToGlobal(position))
+        return menu
+
+    def _show_header_menu(self, position: object) -> None:
+        header = self.horizontalHeader()
+        self.header_menu(header.logicalIndexAt(position)).exec(header.mapToGlobal(position))
 
     def _show_all_columns(self) -> None:
         for index in range(self.model().columnCount()):

@@ -26,6 +26,7 @@ from ..constants import DISPOSED_STATUSES
 from ..db import Library, create_library, open_library
 from ..models import Subcollection
 from ..services import CollectionService
+from .column_settings import ColumnSettingsDialog
 from .commands import AddSpecimens, DeleteSpecimens, MoveSpecimens, SetSortValue, SetStatus
 from .detail_panel import DetailPanel, _readable
 from .fields_dialog import ManageFieldsDialog, NewFieldDialog
@@ -78,6 +79,7 @@ class MainWindow(QMainWindow):
         self.view.setModel(self.model)
         self.model.sort_cleared.connect(self.view.clear_sort_indicator)
         self.view.sort_value_requested.connect(self._edit_sort_value)
+        self.view.column_settings_requested.connect(self._column_settings)
         self.view.status.connect(lambda text: self.statusBar().showMessage(text, 4000))
         self.setCentralWidget(self.view)
 
@@ -471,6 +473,44 @@ class MainWindow(QMainWindow):
             return
         ManageFieldsDialog(self.service, subcollection, self).exec()
         self.model.refresh()
+
+    def _column_settings(self, section: int) -> None:
+        """Change what a catalogue, grade, certification or links column shows."""
+        column = self.model.column_at(section)
+        if column is None or column.kind == "field":
+            return
+        subcollection = self.current_subcollection()
+        if subcollection is None:
+            # Settings belong to the column in a subcollection, and the master view is a merge
+            # of several. Saying so is more use than silently editing whichever came first.
+            self.statusBar().showMessage(
+                "Column settings belong to a subcollection — open one of its tabs to change "
+                "what this column shows.",
+                8000,
+            )
+            return
+        block = self.service.block_for(subcollection, column.kind)
+        if block is None:  # pragma: no cover - the column came from a block
+            return
+
+        dialog = ColumnSettingsDialog(
+            self.service, subcollection, column.kind, column.display, self
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        chosen = dialog.display()
+
+        def apply() -> bool:
+            self.service.set_block_display(block, chosen)
+            self.session.commit()
+            self.model.refresh()
+            return True
+
+        if self.guard("saving column settings", apply):
+            self.statusBar().showMessage(
+                f"{column.label}: {chosen.describe(column.kind)}", 5000
+            )
 
     # -- sort values ------------------------------------------------------
 

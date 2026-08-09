@@ -190,6 +190,14 @@ class SpecimenTableModel(QAbstractTableModel):
             if section < len(FIXED_COLUMNS):
                 return FIXED_COLUMNS[section]
             return self._columns[section - len(FIXED_COLUMNS)].label
+        if role == Qt.ItemDataRole.ToolTipRole and section >= len(FIXED_COLUMNS):
+            column = self.column_at(section)
+            if column is not None and column.kind != "field":
+                return (
+                    f"{column.display.describe(column.kind)}.\n"
+                    "Right-click the header to change what this column shows."
+                )
+            return None
         if role == Qt.ItemDataRole.ToolTipRole and section < len(FIXED_COLUMNS):
             return {
                 ID_COLUMN: "A unique identifier, assigned automatically and editable.",
@@ -223,7 +231,7 @@ class SpecimenTableModel(QAbstractTableModel):
             if column is None:
                 return self._fixed_value(specimen, index.column())
             if column.kind != "field":
-                return self._special_cell(specimen, column.kind)
+                return self.service.special_cell(specimen, column.kind, column.display)
             return self._grid.get((specimen.id, column.field_id), "")
 
         if (
@@ -277,20 +285,14 @@ class SpecimenTableModel(QAbstractTableModel):
         return self._subcollection_name(specimen)
 
     def _special_cell(self, specimen: Specimen, kind: str) -> str:
-        """A read-only summary of a special system, until it has its own editor."""
-        if kind == "catalogues":
-            return self.service.combined_catalogue_cell(specimen)
-        if kind == "grades":
-            grade = self.service.primary_grade(specimen)
-            return grade.raw_text if grade else ""
-        if kind == "certifications":
-            current = self.service.current_certifications(specimen)
-            return ", ".join(
-                f"{c.company.code} {c.cert_number or ''}".strip() for c in current
-            )
-        if kind == "links":
-            return str(len(specimen.links) or "")
-        return ""
+        """A read-only summary of a special system, rendered with that column's settings.
+
+        Kept as a thin wrapper because the rules belong in the service, where they can be tested
+        without Qt and reused by exports and label templates.
+        """
+        column = next((c for c in self._columns if c.kind == kind), None)
+        display = column.display if column is not None else None
+        return self.service.special_cell(specimen, kind, display)
 
     def setData(
         self, index: QModelIndex, value: object, role: int = Qt.ItemDataRole.EditRole
